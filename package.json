@@ -7,6 +7,7 @@
     "start": "node server.js",
     "web": "node server.js",
     "web:dev": "PORT=4173 node server.js",
+    "postinstall": "playwright install chromium",
     "test": "echo 'Tests pending'"
   },
   "keywords": [
