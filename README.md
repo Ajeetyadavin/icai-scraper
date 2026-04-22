@@ -45,9 +45,38 @@ node cli.js
 
 ## Vercel Deployment
 
-This project now includes a Vercel-compatible setup:
+Deploy instantly to Vercel with serverless support:
 
-1. Deploy the repository to Vercel.
+### Steps:
+1. Visit [Vercel Dashboard](https://vercel.com/dashboard)
+2. Click **"Add New"** → **"Project"**
+3. **Import this GitHub repository** (`icai-scraper`)
+4. **Add Environment Variables** in Vercel:
+   - `ICAI_USER_ID` = Your ICAI email (e.g., WRO0873063@icai.org)
+   - `ICAI_PASSWORD` = Your ICAI password
+5. Click **"Deploy"** 🚀
+
+Your app will be live at: `https://your-project-name.vercel.app`
+
+### Features Available:
+- ✅ Instant student search (SRN/Mobile)
+- ✅ Bulk CSV download (range-based)
+- ✅ CSV merge (multiple files)
+- ✅ Login with connection status
+- ✅ Advanced tools panel (toggle in corner)
+
+### Development
+
+For local development:
+
+```bash
+cp .env.example .env
+# Edit .env with your ICAI credentials
+npm install
+npm start
+```
+
+Then visit: `http://localhost:4173`
 2. Vercel will serve the UI from `web/` and route `/api/*` to the serverless handler in `api/[...path].js`.
 3. The manual CSV upload merge flow works well on Vercel.
 
