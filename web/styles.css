@@ -1,0 +1,446 @@
+/* Login button styles */
+.loginBtn {
+  border: none;
+  border-radius: 14px;
+  background: linear-gradient(90deg, #1166b5, #2e7ec4);
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.18s, box-shadow 0.18s, transform 0.13s;
+  box-shadow: 0 2px 10px rgba(18, 35, 52, 0.08);
+}
+.loginBtn.loading {
+  background: repeating-linear-gradient(90deg, #b5b5b5 0 20px, #e0e0e0 20px 40px);
+  color: #fff;
+  cursor: wait;
+  opacity: 0.8;
+}
+.loginBtn.success {
+  background: linear-gradient(90deg, #0a8a3c, #3ecf4a);
+  color: #fff;
+  box-shadow: 0 2px 16px rgba(10, 138, 60, 0.13);
+}
+.loginBtn:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+/* Floating corner button for advanced tools */
+.cornerBulkBtn {
+  position: fixed;
+  bottom: 28px;
+  right: 28px;
+  z-index: 100;
+  width: 54px;
+  height: 54px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #007a6b 60%, #2e7ec4 100%);
+  color: #fff;
+  border: none;
+  box-shadow: 0 4px 18px rgba(18, 35, 52, 0.13);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 2rem;
+  cursor: pointer;
+  transition: background 0.18s, box-shadow 0.18s, transform 0.13s;
+}
+.cornerBulkBtn.active {
+  background: linear-gradient(135deg, #2e7ec4 60%, #007a6b 100%);
+  box-shadow: 0 6px 24px rgba(18, 35, 52, 0.18);
+  transform: scale(1.08);
+}
+.cornerBulkBtn:active {
+  transform: scale(0.97);
+}
+
+/* Advanced bulk/merge panel styles */
+.bulkToolsPanel {
+  position: fixed;
+  bottom: 98px;
+  right: 28px;
+  z-index: 99;
+  min-width: 320px;
+  max-width: 96vw;
+  background: var(--card);
+  border: 1.5px solid var(--line);
+  border-radius: 18px;
+  box-shadow: 0 8px 32px rgba(18, 35, 52, 0.13);
+  padding: 18px 18px 10px 18px;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(30px) scale(0.98);
+  transition: opacity 0.22s, transform 0.22s;
+}
+.bulkToolsPanel.visible {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0) scale(1);
+}
+
+@media (max-width: 680px) {
+  .cornerBulkBtn {
+    bottom: 16px;
+    right: 16px;
+    width: 46px;
+    height: 46px;
+    font-size: 1.5rem;
+  }
+  .bulkToolsPanel {
+    bottom: 70px;
+    right: 8px;
+    min-width: 90vw;
+    padding: 12px 8px 8px 8px;
+  }
+}
+:root {
+  --bg-a: #f7f3eb;
+  --bg-b: #e9f2f7;
+  --card: rgba(255, 255, 255, 0.86);
+  --line: rgba(30, 53, 74, 0.15);
+  --ink: #1f2a36;
+  --muted: #54667a;
+  --accent: #007a6b;
+  --accent-soft: #d5f4ef;
+  --danger: #b3261e;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: "Poppins", "Segoe UI", sans-serif;
+  color: var(--ink);
+  background:
+    radial-gradient(circle at 10% 15%, rgba(0, 122, 107, 0.16) 0, transparent 44%),
+    radial-gradient(circle at 82% 78%, rgba(46, 126, 196, 0.18) 0, transparent 42%),
+    linear-gradient(130deg, var(--bg-a), var(--bg-b));
+}
+
+.page {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 40px 20px 48px;
+}
+
+.hero {
+  margin-bottom: 18px;
+}
+
+.hero h1 {
+  margin: 0;
+  font-size: clamp(1.7rem, 5vw, 3rem);
+  letter-spacing: 0.01em;
+}
+
+.hero p {
+  margin-top: 10px;
+  color: var(--muted);
+}
+
+.searchCard,
+.resultCard {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  backdrop-filter: blur(8px);
+  box-shadow: 0 8px 30px rgba(18, 35, 52, 0.08);
+}
+
+.searchCard {
+  padding: 16px;
+}
+
+.bulkCard {
+  margin-top: 14px;
+}
+
+.bulkCard h3 {
+  margin: 0 0 10px;
+  font-size: 1rem;
+}
+
+.mergeTools {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
+.checkRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink);
+  font-size: 0.9rem;
+}
+
+.mergeBtn {
+  border: none;
+  border-radius: 12px;
+  min-height: 42px;
+  padding: 0 16px;
+  background: linear-gradient(90deg, #1166b5, #2e7ec4);
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.mergeBtn:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.fileList {
+  margin-top: 10px;
+  max-height: 260px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.74);
+}
+
+.fileItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(30, 53, 74, 0.08);
+  font-size: 0.9rem;
+}
+
+.fileItem:last-child {
+  border-bottom: none;
+}
+
+.fileUploadInput {
+  margin-top: 10px;
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.modeRow {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.modeBtn {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 7px 12px;
+  background: rgba(255, 255, 255, 0.7);
+  color: var(--ink);
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.modeBtn.active {
+  background: var(--accent-soft);
+  border-color: rgba(0, 122, 107, 0.45);
+  color: #0a5e52;
+}
+
+.searchRow {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+}
+
+.searchRow input {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  font-size: 1rem;
+  padding: 14px 16px;
+  outline: none;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.searchRow input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px rgba(0, 122, 107, 0.17);
+}
+
+.searchRow button {
+  border: none;
+  border-radius: 14px;
+  min-width: 140px;
+  padding: 0 22px;
+  background: linear-gradient(90deg, #007a6b, #0a9b85);
+  color: #fff;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: transform 0.15s ease, filter 0.2s ease;
+}
+
+.searchRow button:hover {
+  filter: brightness(1.03);
+  transform: translateY(-1px);
+}
+
+.searchRow button:disabled {
+  opacity: 0.7;
+  cursor: wait;
+  transform: none;
+}
+
+.metaLine {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.progressTrack {
+  margin-top: 10px;
+  width: 100%;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(31, 42, 54, 0.08);
+  overflow: hidden;
+}
+
+.progressFill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #007a6b, #0a9b85, #25b8a0);
+  transition: width 0.12s linear;
+}
+
+.errorBox {
+  margin-top: 12px;
+  border-radius: 12px;
+  background: #ffe7e5;
+  border: 1px solid rgba(179, 38, 30, 0.25);
+  color: var(--danger);
+  padding: 10px 12px;
+  font-size: 0.92rem;
+}
+
+.resultCard {
+  margin-top: 18px;
+  padding: 18px;
+  animation: rise 0.34s ease;
+}
+
+.courseSection {
+  margin-top: 18px;
+}
+
+.courseSection h3 {
+  margin: 0 0 10px;
+  font-size: 1rem;
+}
+
+.tableWrap {
+  width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.75);
+}
+
+.courseTable {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 760px;
+}
+
+.courseTable th,
+.courseTable td {
+  text-align: left;
+  padding: 10px;
+  border-bottom: 1px solid rgba(30, 53, 74, 0.12);
+  font-size: 0.88rem;
+}
+
+.courseTable th {
+  font-size: 0.8rem;
+  color: var(--muted);
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.resultHead {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: baseline;
+  margin-bottom: 14px;
+}
+
+.resultHead h2 {
+  margin: 0;
+  font-size: 1.2rem;
+}
+
+.badge {
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: var(--accent-soft);
+  color: #0a5e52;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.field {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.8);
+}
+
+.field span {
+  display: block;
+  color: var(--muted);
+  font-size: 0.82rem;
+  margin-bottom: 3px;
+}
+
+.field strong {
+  font-size: 0.98rem;
+  word-break: break-word;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 680px) {
+  .searchRow {
+    grid-template-columns: 1fr;
+  }
+
+  .searchRow button {
+    min-height: 47px;
+  }
+
+  .grid {
+    grid-template-columns: 1fr;
+  }
+
+  .mergeTools {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}

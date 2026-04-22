@@ -1,0 +1,30 @@
+{
+  "name": "icai-scraper",
+  "version": "1.0.0",
+  "description": "ICAI Student Card Bulk Data Extractor",
+  "main": "cli.js",
+  "scripts": {
+    "start": "node server.js",
+    "web": "node server.js",
+    "web:dev": "PORT=4173 node server.js",
+    "test": "echo 'Tests pending'"
+  },
+  "keywords": [
+    "icai",
+    "scraper",
+    "automation"
+  ],
+  "author": "Ajeet",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.15.0",
+    "csv-writer": "^1.6.0",
+    "dotenv": "^16.3.1",
+    "express": "^5.2.1",
+    "form-data": "^4.0.5",
+    "pdf-parse": "^1.1.1",
+    "playwright": "^1.59.1",
+    "puppeteer": "^21.6.1",
+    "winston": "^3.11.0"
+  }
+}
