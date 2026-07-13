@@ -22,13 +22,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-freefont-ttf \
     && rm -rf /var/lib/apt/lists/*
 
+# Install Playwright browsers first (cached separately)
+RUN npx playwright install chromium
+
 WORKDIR /app
 
-# Copy package files first for better caching
+# Copy package files for dependency caching
 COPY package.json package-lock.json ./
 
-# Install dependencies (skip playwright postinstall, we'll do it manually)
-RUN npm ci --omit=dev && npx playwright install chromium
+# Install production deps only (skip postinstall since chromium already installed)
+RUN npm ci --omit=dev --ignore-scripts
 
 # Copy app code
 COPY . .
@@ -36,11 +39,9 @@ COPY . .
 # Create output directory
 RUN mkdir -p output/jobs
 
-# Expose port
 EXPOSE 4173
 
 ENV PORT=4173
 ENV NODE_ENV=production
 
-# Start server with extra memory
 CMD ["node", "--max-old-space-size=4096", "server.js"]

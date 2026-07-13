@@ -720,7 +720,7 @@ async function ensureAuthenticatedContext(proxyUrl) {
 
       const page = await context.newPage();
       await page.waitForTimeout(Math.floor(Math.random() * 1500) + 500);
-      await page.goto('https://eservices.icai.org/', { waitUntil: 'domcontentloaded', timeout: 120000 });
+      await page.goto('https://eservices.icai.org/', { waitUntil: 'networkidle', timeout: 120000 });
 
       const userId = process.env.ICAI_USER_ID || '';
       const password = process.env.ICAI_PASSWORD || '';
@@ -728,7 +728,7 @@ async function ensureAuthenticatedContext(proxyUrl) {
         throw new Error('Missing ICAI_USER_ID or ICAI_PASSWORD in .env');
       }
 
-      await page.waitForSelector('#accountname', { timeout: 60000 });
+      await page.waitForSelector('#accountname', { state: 'visible', timeout: 90000 });
       await page.fill('#accountname', userId);
       await page.fill('#password', password);
 
@@ -796,13 +796,13 @@ async function ensureAuthenticatedContext(proxyUrl) {
     });
 
     const page = await context.newPage();
-    await page.goto('https://eservices.icai.org/', { waitUntil: 'domcontentloaded', timeout: 120000 });
+    await page.goto('https://eservices.icai.org/', { waitUntil: 'networkidle', timeout: 120000 });
 
     const userId = process.env.ICAI_USER_ID || '';
     const password = process.env.ICAI_PASSWORD || '';
     if (!userId || !password) throw new Error('Missing credentials');
 
-    await page.waitForSelector('#accountname', { timeout: 60000 });
+    await page.waitForSelector('#accountname', { state: 'visible', timeout: 90000 });
     await page.fill('#accountname', userId);
     await page.fill('#password', password);
     await Promise.all([
