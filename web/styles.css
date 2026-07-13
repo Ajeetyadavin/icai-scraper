@@ -253,6 +253,12 @@ body {
   gap: 10px;
 }
 
+.bulkRow {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr) 110px auto;
+  gap: 10px;
+}
+
 .searchRow input {
   width: 100%;
   border: 1px solid var(--line);
@@ -263,7 +269,22 @@ body {
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
+.bulkRow input {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  font-size: 1rem;
+  padding: 14px 16px;
+  outline: none;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
 .searchRow input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px rgba(0, 122, 107, 0.17);
+}
+
+.bulkRow input:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 4px rgba(0, 122, 107, 0.17);
 }
@@ -281,12 +302,36 @@ body {
   transition: transform 0.15s ease, filter 0.2s ease;
 }
 
+.bulkRow button {
+  border: none;
+  border-radius: 14px;
+  min-width: 140px;
+  padding: 0 22px;
+  background: linear-gradient(90deg, #007a6b, #0a9b85);
+  color: #fff;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: transform 0.15s ease, filter 0.2s ease;
+}
+
 .searchRow button:hover {
   filter: brightness(1.03);
   transform: translateY(-1px);
 }
 
+.bulkRow button:hover {
+  filter: brightness(1.03);
+  transform: translateY(-1px);
+}
+
 .searchRow button:disabled {
+  opacity: 0.7;
+  cursor: wait;
+  transform: none;
+}
+
+.bulkRow button:disabled {
   opacity: 0.7;
   cursor: wait;
   transform: none;
@@ -431,7 +476,15 @@ body {
     grid-template-columns: 1fr;
   }
 
+  .bulkRow {
+    grid-template-columns: 1fr;
+  }
+
   .searchRow button {
+    min-height: 47px;
+  }
+
+  .bulkRow button {
     min-height: 47px;
   }
 
@@ -442,5 +495,100 @@ body {
   .mergeTools {
     flex-direction: column;
     align-items: stretch;
+  }
+}
+
+/* Bulk Progress Real-time UI */
+.bulkProgressBox {
+  margin-top: 14px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: rgba(0, 122, 107, 0.04);
+  border: 1px solid rgba(0, 122, 107, 0.18);
+}
+
+.bulkProgressBar {
+  width: 100%;
+  height: 12px;
+  border-radius: 999px;
+  background: rgba(31, 42, 54, 0.08);
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+
+.bulkProgressFill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #007a6b, #0a9b85, #25b8a0);
+  transition: width 0.3s ease;
+}
+
+.bulkProgressStats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  font-size: 0.9rem;
+  color: var(--ink);
+}
+
+.bulkProgressCount strong {
+  font-size: 1.1rem;
+  color: var(--accent);
+}
+
+.bulkProgressOk {
+  color: #0a8a3c;
+  font-weight: 600;
+}
+
+.bulkProgressFail {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.bulkProgressTime {
+  color: var(--muted);
+}
+
+.bulkProgressEta {
+  color: #1166b5;
+  font-weight: 500;
+}
+
+.bulkProgressLast {
+  margin-top: 8px;
+  font-size: 0.85rem;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cancelBtn {
+  border: none;
+  border-radius: 14px;
+  min-width: 90px;
+  padding: 0 16px;
+  background: linear-gradient(90deg, #b3261e, #d9453e);
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.15s ease, filter 0.2s ease;
+}
+
+.cancelBtn:hover {
+  filter: brightness(1.05);
+  transform: translateY(-1px);
+}
+
+@media (max-width: 680px) {
+  .bulkProgressStats {
+    gap: 8px;
+    font-size: 0.82rem;
+  }
+
+  .bulkProgressBox {
+    padding: 10px 12px;
   }
 }

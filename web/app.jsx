@@ -110,9 +110,13 @@ function App() {
   const [sourceMeta, setSourceMeta] = useState('');
   const [loadingProgress, setLoadingProgress] = useState(0);
   const [elapsedMs, setElapsedMs] = useState(0);
-  const [bulkRange, setBulkRange] = useState('WRO0942133 +1000');
+  const [bulkPrefix, setBulkPrefix] = useState('WRO');
+  const [bulkStartNo, setBulkStartNo] = useState('0942133');
+  const [bulkCount, setBulkCount] = useState('1000');
   const [bulkLoading, setBulkLoading] = useState(false);
   const [bulkStatus, setBulkStatus] = useState('');
+  const [bulkProgress, setBulkProgress] = useState(null);
+  const bulkEventSourceRef = useRef(null);
   const [csvFiles, setCsvFiles] = useState([]);
   const [selectedCsvFiles, setSelectedCsvFiles] = useState([]);
   const [mergeLoading, setMergeLoading] = useState(false);
@@ -127,11 +131,15 @@ function App() {
   const startTimeRef = useRef(0);
   const intervalRef = useRef(null);
 
+  // Background Jobs state
+  const [jobsList, setJobsList] = useState([]);
+  const [jobPolling, setJobPolling] = useState(false);
+  const jobPollRef = useRef(null);
+
   const cleanedSrn = useMemo(() => query.trim().toUpperCase(), [query]);
   const cleanedMobile = useMemo(() => query.replace(/\D/g, '').slice(-10), [query]);
-  const filteredCourseRows = useMemo(() => {
-    const rows = Array.isArray(result && result.courseRows) ? result.courseRows : [];
-    return rows.filter((row) => row.level === 'FOUNDATION' || row.level === 'INTERMEDIATE');
+  const courseRows = useMemo(() => {
+    return Array.isArray(result && result.courseRows) ? result.courseRows : [];
   }, [result]);
 
   useEffect(() => {
@@ -160,6 +168,87 @@ function App() {
     loadCsvFiles();
   }, []);
 
+  useEffect(() => {
+    let active = true;
+
+    async function loadConfig() {
+      try {
+        const res = await fetch('/api/config');
+        const json = await res.json();
+
+        if (!active || !res.ok || !json.ok) {
+          return;
+        }
+
+        const prefix = String(json.studentPrefix || 'WRO').trim().toUpperCase();
+        const defaultStartNumber = String(json.defaultStartNumber || '0873000').trim();
+
+        if (/^[A-Z]{3}$/.test(prefix)) {
+          setBulkPrefix(prefix);
+          setQuery(`${prefix}${defaultStartNumber}`);
+        }
+      } catch (_err) {
+        // Keep the local defaults if the config endpoint is unavailable.
+      }
+    }
+
+    loadConfig();
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // Poll background jobs
+  useEffect(() => {
+    async function pollJobs() {
+      try {
+        const res = await fetch('/api/jobs');
+        const json = await res.json();
+        if (json.ok) setJobsList(json.jobs || []);
+      } catch (_e) {}
+    }
+    pollJobs();
+    jobPollRef.current = setInterval(pollJobs, 3000);
+    return () => { if (jobPollRef.current) clearInterval(jobPollRef.current); };
+  }, []);
+
+  async function startBackgroundJob(e) {
+    e.preventDefault();
+    const prefix = bulkPrefix.trim().toUpperCase();
+    const startNo = bulkStartNo.trim().padStart(7, '0');
+    const count = Number(bulkCount);
+
+    if (!/^[A-Z]{3}$/.test(prefix) || !/^\d{1,7}$/.test(bulkStartNo.trim()) || !Number.isFinite(count) || count < 1) {
+      setBulkStatus('Invalid input');
+      return;
+    }
+
+    setBulkStatus('Starting background job...');
+    try {
+      const res = await fetch('/api/jobs/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prefix, start: startNo, count })
+      });
+      const json = await res.json();
+      if (!res.ok || !json.ok) throw new Error(json.error || 'Failed to start job');
+      setBulkStatus(`Job started: ${json.jobId}. Tab band karo — server pe chalti rahegi.`);
+    } catch (err) {
+      setBulkStatus(err.message || 'Failed to start job');
+    }
+  }
+
+  async function cancelJob(jobId) {
+    try {
+      await fetch(`/api/jobs/cancel/${jobId}`, { method: 'POST' });
+    } catch (_e) {}
+  }
+
+  function downloadJob(jobId) {
+    window.open(`/api/jobs/download/${jobId}`, '_blank');
+  }
+
   async function onSearch(e) {
     e.preventDefault();
     setError('');
@@ -171,7 +260,7 @@ function App() {
 
     if (searchMode === 'srn') {
       if (!/^[A-Z]{3}\d{7}$/.test(cleanedSrn)) {
-        setError('Valid SRN format dalo: WRO0873000');
+        setError(`Valid SRN format dalo: ${bulkPrefix}0873000`);
         return;
       }
     } else if (!/^\d{10}$/.test(cleanedMobile)) {
@@ -179,7 +268,6 @@ function App() {
       return;
     }
 
-    setLoading(true);
     startTimeRef.current = Date.now();
     intervalRef.current = setInterval(() => {
       const elapsed = Date.now() - startTimeRef.current;
@@ -227,46 +315,113 @@ function App() {
   async function onBulkDownload(e) {
     e.preventDefault();
     setBulkStatus('');
+    setBulkProgress(null);
 
-    const expression = bulkRange.trim().toUpperCase();
-    if (!/^[A-Z]{3}\d{7}\s*\+\s*\d{1,5}$/.test(expression)) {
-      setBulkStatus('Format galat hai. Example: WRO0942133 +1000');
+    const prefix = bulkPrefix.trim().toUpperCase();
+    const startNo = bulkStartNo.trim();
+    const count = Number(bulkCount);
+
+    if (!/^[A-Z]{3}$/.test(prefix) || !/^\d{1,7}$/.test(startNo) || !Number.isFinite(count) || count < 1) {
+      setBulkStatus('');
       return;
     }
 
+    // Pad start number to 7 digits
+    const paddedStart = startNo.padStart(7, '0');
+
     setBulkLoading(true);
-    setBulkStatus('Preparing CSV... thoda time lag sakta hai.');
+    setBulkProgress({ completed: 0, total: count, ok: 0, failed: 0, elapsedMs: 0, etaMs: 0, lastSrn: '', lastName: '' });
 
-    try {
-      const res = await fetch(`/api/export-range?range=${encodeURIComponent(expression)}`);
-      if (!res.ok) {
-        const json = await res.json().catch(() => ({}));
-        throw new Error(json.error || 'Export failed');
-      }
-
-      const blob = await res.blob();
-      const disposition = res.headers.get('content-disposition') || '';
-      const match = disposition.match(/filename="?([^\"]+)"?/i);
-      const fileName = match ? match[1] : `students_${Date.now()}.csv`;
-
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = fileName;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-
-      const total = res.headers.get('x-export-total');
-      const okCount = res.headers.get('x-export-ok');
-      const failed = res.headers.get('x-export-failed');
-      setBulkStatus(`Downloaded: ${fileName} | Total: ${total || '-'} | OK: ${okCount || '-'} | Failed: ${failed || '-'}`);
-    } catch (err) {
-      setBulkStatus(err.message || 'Export failed');
-    } finally {
-      setBulkLoading(false);
+    // Close any existing SSE connection
+    if (bulkEventSourceRef.current) {
+      bulkEventSourceRef.current.close();
+      bulkEventSourceRef.current = null;
     }
+
+    const params = new URLSearchParams({ prefix, start: paddedStart, count: String(count) });
+    const eventSource = new EventSource(`/api/export-range-stream?${params.toString()}`);
+    bulkEventSourceRef.current = eventSource;
+
+    eventSource.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+
+        if (msg.type === 'error') {
+          setBulkStatus(msg.error || 'Export failed');
+          setBulkLoading(false);
+          setBulkProgress(null);
+          eventSource.close();
+          return;
+        }
+
+        if (msg.type === 'start') {
+          setBulkProgress((prev) => ({ ...prev, total: msg.total, concurrency: msg.concurrency }));
+          return;
+        }
+
+        if (msg.type === 'progress') {
+          setBulkProgress({
+            completed: msg.completed,
+            total: msg.total,
+            ok: msg.ok,
+            failed: msg.failed,
+            elapsedMs: msg.elapsedMs,
+            etaMs: msg.etaMs,
+            lastSrn: msg.lastSrn || '',
+            lastStatus: msg.lastStatus || '',
+            lastName: msg.lastName || ''
+          });
+          return;
+        }
+
+        if (msg.type === 'throttle') {
+          setBulkStatus(`⚠️ ${msg.message}`);
+          return;
+        }
+
+        if (msg.type === 'complete') {
+          // Decode base64 CSV and trigger download
+          const csvBytes = atob(msg.csv);
+          const uint8Array = new Uint8Array(csvBytes.length);
+          for (let i = 0; i < csvBytes.length; i++) {
+            uint8Array[i] = csvBytes.charCodeAt(i);
+          }
+          const blob = new Blob([uint8Array], { type: 'text/csv;charset=utf-8' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = msg.fileName || `students_${Date.now()}.csv`;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          URL.revokeObjectURL(url);
+
+          setBulkStatus(
+            `✅ Done! ${msg.fileName} | Total: ${msg.total} | OK: ${msg.ok} | Failed: ${msg.failed} | Time: ${(msg.elapsedMs / 1000).toFixed(1)}s`
+          );
+          setBulkLoading(false);
+          eventSource.close();
+          return;
+        }
+      } catch (err) {
+        // ignore parse errors
+      }
+    };
+
+    eventSource.onerror = () => {
+      setBulkStatus('Connection lost. Export may have failed.');
+      setBulkLoading(false);
+      eventSource.close();
+    };
+  }
+
+  function onBulkCancel() {
+    if (bulkEventSourceRef.current) {
+      bulkEventSourceRef.current.close();
+      bulkEventSourceRef.current = null;
+    }
+    setBulkLoading(false);
+    setBulkStatus('Export cancelled.');
   }
 
   function toggleCsvFile(name) {
@@ -329,11 +484,28 @@ function App() {
           `Downloaded: ${fileName} | Files: ${files || '-'} | Rows: ${rows || '-'} | Duplicates skipped: ${dups || '0'}`
         );
       } else {
-        const texts = await Promise.all(uploadedCsvFiles.map((file) => file.text()));
-        const merged = mergeCsvTexts(texts, dedupeSrn);
-        const fileName = `merged_manual_${Date.now()}.csv`;
+        // Upload files to server for merge (handles large files)
+        const formData = new FormData();
+        formData.append('dedupeSrn', String(dedupeSrn));
+        for (const file of uploadedCsvFiles) {
+          formData.append('files', file);
+        }
 
-        const blob = new Blob([merged.csv], { type: 'text/csv;charset=utf-8' });
+        const res = await fetch('/api/merge-csv-upload', {
+          method: 'POST',
+          body: formData
+        });
+
+        if (!res.ok) {
+          const json = await res.json().catch(() => ({}));
+          throw new Error(json.error || 'CSV merge failed');
+        }
+
+        const blob = await res.blob();
+        const disposition = res.headers.get('content-disposition') || '';
+        const match = disposition.match(/filename="?([^\"]+)"?/i);
+        const fileName = match ? match[1] : `merged_manual_${Date.now()}.csv`;
+
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
@@ -343,8 +515,11 @@ function App() {
         a.remove();
         URL.revokeObjectURL(url);
 
+        const rows = res.headers.get('x-merge-rows');
+        const dups = res.headers.get('x-merge-duplicates');
+        const files = res.headers.get('x-merge-files');
         setMergeStatus(
-          `Downloaded: ${fileName} | Files: ${uploadedCsvFiles.length} | Rows: ${merged.mergedCount} | Duplicates skipped: ${merged.duplicateCount}`
+          `Downloaded: ${fileName} | Files: ${files || '-'} | Rows: ${rows || '-'} | Duplicates skipped: ${dups || '0'}`
         );
       }
     } catch (err) {
@@ -418,7 +593,7 @@ function App() {
             className={searchMode === 'srn' ? 'modeBtn active' : 'modeBtn'}
             onClick={() => {
               setSearchMode('srn');
-              setQuery('WRO0873000');
+              setQuery(`${bulkPrefix}0873000`);
             }}
           >
             Search by SRN
@@ -439,7 +614,7 @@ function App() {
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder={searchMode === 'srn' ? 'WRO0873000' : '9876543210'}
+            placeholder={searchMode === 'srn' ? `${bulkPrefix}0873000` : '9876543210'}
             spellCheck="false"
             autoCapitalize={searchMode === 'srn' ? 'characters' : 'off'}
             disabled={!isLoggedIn}
@@ -467,21 +642,138 @@ function App() {
         style={{display: showBulkTools ? undefined : 'none'}}>
         <section className="searchCard bulkCard">
           <h3>Bulk CSV Download (Range)</h3>
-          <form className="searchRow" onSubmit={onBulkDownload}>
+          <form className="bulkRow" onSubmit={onBulkDownload}>
             <input
-              value={bulkRange}
-              onChange={(e) => setBulkRange(e.target.value)}
-              placeholder="WRO0942133 +1000"
+              value={bulkPrefix}
+              onChange={(e) => setBulkPrefix(e.target.value.toUpperCase())}
+              placeholder="WRO"
               spellCheck="false"
               autoCapitalize="characters"
+              maxLength={3}
+            />
+            <input
+              value={bulkStartNo}
+              onChange={(e) => setBulkStartNo(e.target.value.replace(/\D/g, '').slice(0, 7))}
+              placeholder="0942133"
+              spellCheck="false"
+              inputMode="numeric"
+              maxLength={7}
+            />
+            <input
+              value={bulkCount}
+              onChange={(e) => setBulkCount(e.target.value.replace(/\D/g, '').slice(0, 5))}
+              placeholder="1000"
+              spellCheck="false"
+              inputMode="numeric"
+              maxLength={5}
             />
             <button type="submit" disabled={bulkLoading}>
-              {bulkLoading ? 'Preparing...' : 'Download CSV'}
+              {bulkLoading ? 'Downloading...' : 'Download CSV'}
             </button>
+            {bulkLoading && (
+              <button type="button" className="cancelBtn" onClick={onBulkCancel}>
+                Cancel
+              </button>
+            )}
           </form>
-          <div className="metaLine">Example: WRO0942133 +1000 means 1000 SRN records from start SRN.</div>
+
+          {bulkLoading && bulkProgress && (
+            <div className="bulkProgressBox">
+              <div className="bulkProgressBar">
+                <div
+                  className="bulkProgressFill"
+                  style={{ width: `${Math.round((bulkProgress.completed / (bulkProgress.total || 1)) * 100)}%` }}
+                />
+              </div>
+              <div className="bulkProgressStats">
+                <span className="bulkProgressCount">
+                  <strong>{bulkProgress.completed}</strong> / {bulkProgress.total}
+                </span>
+                <span className="bulkProgressOk">✓ {bulkProgress.ok}</span>
+                <span className="bulkProgressFail">✗ {bulkProgress.failed}</span>
+                <span className="bulkProgressTime">
+                  {(bulkProgress.elapsedMs / 1000).toFixed(1)}s elapsed
+                </span>
+                {bulkProgress.etaMs > 0 && (
+                  <span className="bulkProgressEta">
+                    ~{(bulkProgress.etaMs / 1000).toFixed(0)}s left
+                  </span>
+                )}
+              </div>
+              {bulkProgress.lastSrn && (
+                <div className="bulkProgressLast">
+                  Last: {bulkProgress.lastSrn}
+                  {bulkProgress.lastName ? ` → ${bulkProgress.lastName}` : ''}
+                  {bulkProgress.lastStatus === 'error' ? ' ❌' : ' ✅'}
+                </div>
+              )}
+            </div>
+          )}
+
           {bulkStatus ? <div className="metaLine">{bulkStatus}</div> : null}
+
+          <div style={{marginTop: 12, borderTop: '1px solid #e0e0e0', paddingTop: 12}}>
+            <button
+              type="button"
+              className="mergeBtn"
+              style={{background: '#1a73e8', color: '#fff', fontWeight: 600}}
+              onClick={startBackgroundJob}
+            >
+              🚀 Background Job Start (Tab band karo — chalti rahegi)
+            </button>
+          </div>
         </section>
+
+        {/* Background Jobs List */}
+        {jobsList.length > 0 && (
+          <section className="searchCard bulkCard">
+            <h3>Background Jobs</h3>
+            <div style={{fontSize: 13, color: '#666', marginBottom: 8}}>
+              Tab band karo, net band karo — server pe chalti rahegi. Wapas aake download karo.
+            </div>
+            {jobsList.map(function(job) {
+              var pct = job.completed && job.count ? Math.round((job.completed / job.count) * 100) : 0;
+              return (
+                <div key={job.id} className="bulkProgressBox" style={{marginBottom: 10, padding: 10, borderRadius: 8, background: '#f8f9fa'}}>
+                  <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6}}>
+                    <strong>{job.startSrn} + {job.count}</strong>
+                    <span style={{
+                      padding: '2px 8px',
+                      borderRadius: 4,
+                      fontSize: 12,
+                      fontWeight: 600,
+                      background: job.status === 'complete' ? '#d4edda' : job.status === 'running' ? '#fff3cd' : job.status === 'failed' ? '#f8d7da' : '#e2e3e5',
+                      color: job.status === 'complete' ? '#155724' : job.status === 'running' ? '#856404' : job.status === 'failed' ? '#721c24' : '#383d41'
+                    }}>
+                      {job.status === 'complete' ? '✅ Complete' : job.status === 'running' ? '⏳ Running' : job.status === 'failed' ? '❌ Failed' : job.status}
+                    </span>
+                  </div>
+                  <div className="bulkProgressBar" style={{marginBottom: 6}}>
+                    <div className="bulkProgressFill" style={{ width: pct + '%' }} />
+                  </div>
+                  <div style={{display: 'flex', gap: 12, fontSize: 13, color: '#555', flexWrap: 'wrap'}}>
+                    <span>{job.completed}/{job.count}</span>
+                    <span>✓ {job.ok}</span>
+                    <span>✗ {job.failed}</span>
+                    <span>{(job.elapsedMs / 1000).toFixed(0)}s</span>
+                  </div>
+                  <div style={{marginTop: 8, display: 'flex', gap: 8}}>
+                    {job.status === 'complete' && (
+                      <button type="button" className="mergeBtn" style={{fontSize: 13}} onClick={function() { downloadJob(job.id); }}>
+                        Download CSV
+                      </button>
+                    )}
+                    {job.status === 'running' && (
+                      <button type="button" className="cancelBtn" style={{fontSize: 13}} onClick={function() { cancelJob(job.id); }}>
+                        Cancel
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </section>
+        )}
 
         <section className="searchCard bulkCard">
           <h3>Merge Multiple CSV Files</h3>
@@ -561,7 +853,7 @@ function App() {
       {result && (
         <section className="resultCard">
           <div className="resultHead">
-            <h2>{result.studentName || 'Student'}</h2>
+            <h2>{result.name || result.studentName || 'Student'}</h2>
             <div className="badge">{result.srn || 'N/A'}</div>
           </div>
 
@@ -613,8 +905,8 @@ function App() {
           </div>
 
           <div className="courseSection">
-            <h3>Foundation / Intermediate Details</h3>
-            {filteredCourseRows.length === 0 ? (
+            <h3>Foundation / Intermediate / Final Details</h3>
+            {courseRows.length === 0 ? (
               <div className="metaLine">Course details not found in this SRN.</div>
             ) : (
               <div className="tableWrap">
@@ -632,7 +924,7 @@ function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredCourseRows.map((row, idx) => (
+                    {courseRows.map((row, idx) => (
                       <tr key={`${row.course}-${row.rollNo || idx}`}>
                         <td>{row.level || '-'}</td>
                         <td>{row.course || '-'}</td>

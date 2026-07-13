@@ -5,3 +5,4 @@ logs/
 output/
 .env
 .env.local
+proxies.txt

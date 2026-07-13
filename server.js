@@ -2,9 +2,28 @@ const path = require('path');
 const fs = require('fs');
 const readline = require('readline');
 const express = require('express');
+const multer = require('multer');
 const { chromium } = require('playwright');
 const pdfParse = require('pdf-parse');
+const { Pool } = require('undici');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
+
+// Remove Node.js default socket limits
+require('http').globalAgent.maxSockets = Infinity;
+require('https').globalAgent.maxSockets = Infinity;
+
+// Undici connection pool — fastest HTTP client for Node.js
+const icaiPool = new Pool('https://eservices.icai.org', {
+  connections: 2000,
+  pipelining: 10,
+  keepAliveTimeout: 60000,
+  keepAliveMaxTimeout: 120000,
+  headersTimeout: 8000,
+  bodyTimeout: 8000,
+  connect: {
+    rejectUnauthorized: false
+  }
+});
 
 // Debug: Check if env vars are loaded
 console.log('[SERVER] ICAI_USER_ID loaded:', !!process.env.ICAI_USER_ID);
@@ -12,6 +31,12 @@ console.log('[SERVER] ICAI_PASSWORD loaded:', !!process.env.ICAI_PASSWORD);
 
 const app = express();
 const PORT = Number(process.env.PORT || 4173);
+const DEFAULT_STUDENT_PREFIX = normalizeStudentPrefix(process.env.STUDENT_PREFIX) || 'WRO';
+const DEFAULT_START_NUMBER = String(process.env.START_NUMBER || '873000').replace(/\D/g, '').padStart(7, '0').slice(-7);
+const DEFAULT_START_SRN = `${DEFAULT_STUDENT_PREFIX}${DEFAULT_START_NUMBER}`;
+const MAX_EXPORT_COUNT = Number(process.env.MAX_EXPORT_COUNT || 999999);
+const DEFAULT_EXPORT_CONCURRENCY = Number(process.env.EXPORT_CONCURRENCY || 2000);
+const MAX_EXPORT_CONCURRENCY = Number(process.env.MAX_EXPORT_CONCURRENCY || 5000);
 
 const BASE_TEMPLATE_URL =
   process.env.STUDENT_CARD_TEMPLATE_URL ||
@@ -21,6 +46,56 @@ let browser;
 let authContext;
 let authAt = 0;
 let authInFlight;
+let authCookieString = ''; // Cached cookies for direct HTTP
+
+// Proxy pool for IP rotation
+let proxyList = [];
+let proxyContexts = []; // Array of { proxy, context, authAt }
+let proxyRoundRobin = 0;
+const PROXY_API_URL = 'https://api.proxyscrape.com/v4/free-proxy-list/get?request=display_proxies&protocol=http&timeout=5000&ssl=all&anonymity=all';
+
+async function fetchFreshProxies() {
+  try {
+    const https = require('https');
+    const data = await new Promise((resolve, reject) => {
+      https.get(PROXY_API_URL, (res) => {
+        let d = '';
+        res.on('data', chunk => { d += chunk; });
+        res.on('end', () => resolve(d));
+      }).on('error', reject);
+    });
+    const proxies = data.split(/\r?\n/).map(l => l.trim()).filter(l => l && /^\d/.test(l));
+    if (proxies.length > 5) {
+      proxyList = proxies.map(p => `http://${p}`);
+      console.log(`[PROXY] Auto-fetched ${proxyList.length} fresh proxies`);
+      fs.writeFileSync(path.join(__dirname, 'proxies.txt'), proxies.join('\n'), 'utf-8');
+    }
+  } catch (err) {
+    console.log(`[PROXY] API fetch failed: ${err.message}. Using local file.`);
+  }
+}
+
+function loadProxyList() {
+  const proxyFile = path.join(__dirname, 'proxies.txt');
+  if (fs.existsSync(proxyFile)) {
+    const fileProxies = fs.readFileSync(proxyFile, 'utf-8')
+      .split(/\r?\n/).map(l => l.trim()).filter(l => l && !l.startsWith('#'));
+    proxyList = fileProxies.map(p => p.startsWith('http') ? p : `http://${p}`);
+  }
+  // From env comma-separated (override)
+  const envList = process.env.PROXY_LIST || '';
+  if (envList.trim()) {
+    proxyList = envList.split(',').map(p => p.trim()).filter(Boolean);
+  }
+  if (proxyList.length > 0) {
+    console.log(`[PROXY] Loaded ${proxyList.length} proxies for rotation`);
+  } else {
+    console.log(`[PROXY] No proxies loaded. Single-IP mode.`);
+  }
+}
+
+loadProxyList();
+// Proxy fetching disabled — no WAF rate limiting anymore
 
 function isPdfBuffer(buf) {
   return buf && buf.length >= 4 && buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46;
@@ -89,14 +164,35 @@ function normalizeCourseDetails(courseRows) {
     .join(' || ');
 }
 
-function parseSrnRangeExpression(input) {
+function getCourseRowByLevel(courseRows, level) {
+  if (!Array.isArray(courseRows)) return null;
+  return courseRows.find((row) => String(row.level || '').toUpperCase() === level) || null;
+}
+
+function formatCourseAvailability(row) {
+  if (!row) return 'NO';
+  const courseCode = String(row.course || '').trim();
+  return courseCode ? `YES ${courseCode}` : 'YES';
+}
+
+function normalizeStudentPrefix(value) {
+  const prefix = String(value || '').trim().toUpperCase();
+  return /^[A-Z]{3}$/.test(prefix) ? prefix : '';
+}
+
+function normalizeSevenDigitNumber(value) {
+  const digits = String(value || '').replace(/\D/g, '');
+  return digits.length ? digits.padStart(7, '0').slice(-7) : '';
+}
+
+function parseSrnRangeExpression(input, fallbackPrefix = DEFAULT_STUDENT_PREFIX) {
   const value = String(input || '').trim().toUpperCase();
-  const match = value.match(/^([A-Z]{3})(\d{7})\s*\+\s*(\d{1,5})$/);
+  const match = value.match(/^(?:([A-Z]{3}))?(\d{7})\s*\+\s*(\d{1,5})$/);
   if (!match) {
     return null;
   }
 
-  const prefix = match[1];
+  const prefix = normalizeStudentPrefix(match[1] || fallbackPrefix) || fallbackPrefix;
   const startNo = Number(match[2]);
   const count = Number(match[3]);
   if (!Number.isFinite(startNo) || !Number.isFinite(count) || count < 1) {
@@ -109,6 +205,34 @@ function parseSrnRangeExpression(input) {
     count,
     startSrn: `${prefix}${String(startNo).padStart(7, '0')}`
   };
+}
+
+function parseRangeRequest(query) {
+  const range = String(query.range || '').trim();
+  if (range) {
+    return parseSrnRangeExpression(range);
+  }
+
+  const prefix = normalizeStudentPrefix(query.prefix) || DEFAULT_STUDENT_PREFIX;
+  const startNoText = normalizeSevenDigitNumber(query.start || query.startNo || query.srn);
+  const count = Number(query.count);
+
+  if (!prefix || !/^\d{7}$/.test(startNoText) || !Number.isFinite(count) || count < 1) {
+    return null;
+  }
+
+  return {
+    prefix,
+    startNo: Number(startNoText),
+    count,
+    startSrn: `${prefix}${startNoText}`
+  };
+}
+
+function resolveExportConcurrency(requested, count) {
+  const requestedValue = Number(requested);
+  const preferred = Number.isFinite(requestedValue) && requestedValue > 0 ? requestedValue : DEFAULT_EXPORT_CONCURRENCY;
+  return Math.max(1, Math.min(preferred, MAX_EXPORT_CONCURRENCY, count));
 }
 
 function buildSrnList(prefix, startNo, count) {
@@ -397,8 +521,9 @@ function isResultStatus(value) {
 
 function getCourseLevel(course) {
   const c = String(course || '').toUpperCase();
-  if (c.includes('NEWFND') || c.includes('FOUND')) return 'FOUNDATION';
+  if (c.includes('NEWFND') || c.includes('NEWFIN') || c.includes('FND') || c.includes('FOUND')) return 'FOUNDATION';
   if (c.includes('NEWINT') || c.includes('INTER')) return 'INTERMEDIATE';
+  if (c.includes('NEWFNL') || c.includes('FNL') || c.includes('FINAL')) return 'FINAL';
   return 'OTHER';
 }
 
@@ -524,14 +649,19 @@ function parseStudentCardText(text, regNo) {
 }
 
 function isSessionFresh() {
-  const fresh = authContext && Date.now() - authAt < 15 * 60 * 1000;
-  console.log('[isSessionFresh] authContext:', !!authContext, 'fresh:', fresh, 'authAt:', new Date(authAt).toISOString());
+  if (!authContext) return false;
+  const fresh = Date.now() - authAt < 15 * 60 * 1000;
   return fresh;
 }
 
 function shouldReauth(error) {
   const msg = String((error && error.message) || '').toLowerCase();
   return msg.includes('context or browser has been closed') || msg.includes('target page') || msg.includes('session');
+}
+
+function isWafBlock(error) {
+  const msg = String((error && error.message) || '').toLowerCase();
+  return msg.includes('access denied') || msg.includes('waf blocked');
 }
 
 async function closeAuthContext() {
@@ -541,46 +671,145 @@ async function closeAuthContext() {
   }
 }
 
-async function ensureAuthenticatedContext() {
+async function ensureAuthenticatedContext(proxyUrl) {
+  // If no proxy specified and no proxy pool, use default flow
+  if (!proxyUrl) {
+    if (isSessionFresh()) return authContext;
+    if (authInFlight) return authInFlight;
+
+    authInFlight = (async () => {
+      await closeAuthContext();
+
+      if (!browser || !browser.isConnected()) {
+        browser = await chromium.launch({
+          headless: true,
+          args: [
+            '--disable-blink-features=AutomationControlled',
+            '--disable-features=IsolateOrigins,site-per-process',
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--no-first-run',
+            '--no-zygote',
+            '--disable-gpu'
+          ]
+        });
+      }
+
+      const context = await browser.newContext({
+        userAgent:
+          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        viewport: { width: 1366, height: 900 },
+        locale: 'en-IN',
+        timezoneId: 'Asia/Kolkata',
+        extraHTTPHeaders: {
+          'Accept-Language': 'en-IN,en;q=0.9,hi;q=0.8',
+          'sec-ch-ua': '"Chromium";v="131", "Not_A Brand";v="24"',
+          'sec-ch-ua-mobile': '?0',
+          'sec-ch-ua-platform': '"macOS"',
+          'Upgrade-Insecure-Requests': '1'
+        }
+      });
+
+      await context.addInitScript(() => {
+        Object.defineProperty(navigator, 'webdriver', { get: () => false });
+        Object.defineProperty(navigator, 'languages', { get: () => ['en-IN', 'en', 'hi'] });
+        Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+        window.chrome = { runtime: {} };
+      });
+
+      const page = await context.newPage();
+      await page.waitForTimeout(Math.floor(Math.random() * 1500) + 500);
+      await page.goto('https://eservices.icai.org/', { waitUntil: 'domcontentloaded', timeout: 120000 });
+
+      const userId = process.env.ICAI_USER_ID || '';
+      const password = process.env.ICAI_PASSWORD || '';
+      if (!userId || !password) {
+        throw new Error('Missing ICAI_USER_ID or ICAI_PASSWORD in .env');
+      }
+
+      await page.waitForSelector('#accountname', { timeout: 60000 });
+      await page.fill('#accountname', userId);
+      await page.fill('#password', password);
+
+      await Promise.all([
+        page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 90000 }).catch(() => null),
+        page.click('button:has-text("Sign In"), .loginBtn')
+      ]);
+
+      await page.waitForTimeout(1800);
+      const closeModal = page.locator('button:has-text("Close")').first();
+      if (await closeModal.count()) {
+        await closeModal.click().catch(() => {});
+      }
+
+      authContext = context;
+      authAt = Date.now();
+      return authContext;
+    })();
+
+    try {
+      return await authInFlight;
+    } finally {
+      authInFlight = null;
+    }
+  }
+
+  // Proxy-based context — reuse single authenticated context, just route via proxy for PDF fetch
+  // Free proxies can't do login (HTTPS issues), so we use main auth context but fetch PDFs via proxy
+  // This avoids opening multiple tabs/windows
   if (isSessionFresh()) return authContext;
   if (authInFlight) return authInFlight;
 
+  // Fallback to normal auth if proxy requested but we just reuse main session
   authInFlight = (async () => {
     await closeAuthContext();
 
     if (!browser || !browser.isConnected()) {
       browser = await chromium.launch({
         headless: true,
-        args: ['--disable-blink-features=AutomationControlled']
+        args: [
+          '--disable-blink-features=AutomationControlled',
+          '--no-sandbox',
+          '--disable-gpu'
+        ]
       });
     }
 
     const context = await browser.newContext({
       userAgent:
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-      viewport: { width: 1366, height: 900 }
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      viewport: { width: 1366, height: 900 },
+      locale: 'en-IN',
+      timezoneId: 'Asia/Kolkata',
+      extraHTTPHeaders: {
+        'Accept-Language': 'en-IN,en;q=0.9,hi;q=0.8',
+        'sec-ch-ua': '"Chromium";v="131", "Not_A Brand";v="24"',
+        'sec-ch-ua-mobile': '?0',
+        'sec-ch-ua-platform': '"macOS"'
+      }
+    });
+
+    await context.addInitScript(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => false });
+      window.chrome = { runtime: {} };
     });
 
     const page = await context.newPage();
-    await page.goto('https://eservices.icai.org/', { waitUntil: 'domcontentloaded', timeout: 90000 });
+    await page.goto('https://eservices.icai.org/', { waitUntil: 'domcontentloaded', timeout: 120000 });
 
     const userId = process.env.ICAI_USER_ID || '';
     const password = process.env.ICAI_PASSWORD || '';
-    console.log('[ensureAuthenticatedContext] Checking env - userId:', !!userId, 'password:', !!password);
-    if (!userId || !password) {
-      console.log('[ensureAuthenticatedContext] Credentials missing!');
-      throw new Error('Missing ICAI_USER_ID or ICAI_PASSWORD in .env');
-    }
+    if (!userId || !password) throw new Error('Missing credentials');
 
+    await page.waitForSelector('#accountname', { timeout: 60000 });
     await page.fill('#accountname', userId);
     await page.fill('#password', password);
-
     await Promise.all([
       page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 90000 }).catch(() => null),
       page.click('button:has-text("Sign In"), .loginBtn')
     ]);
-
-    await page.waitForTimeout(1800);
+    await page.waitForTimeout(1500);
     const closeModal = page.locator('button:has-text("Close")').first();
     if (await closeModal.count()) {
       await closeModal.click().catch(() => {});
@@ -598,54 +827,300 @@ async function ensureAuthenticatedContext() {
   }
 }
 
-async function fetchStudentCardData(srn) {
-  const secureUrl = buildUrl(BASE_TEMPLATE_URL, srn);
+// Get next proxy in round-robin (returns null if no proxies)
+function getNextProxy() {
+  if (proxyList.length === 0) return null;
+  const proxy = proxyList[proxyRoundRobin % proxyList.length];
+  proxyRoundRobin += 1;
+  return proxy;
+}
 
-  const attemptFetch = async () => {
+async function fetchStudentCardData(srn, _retried) {
+  const url = new URL(BASE_TEMPLATE_URL);
+  url.searchParams.set('studentRegNo', srn);
+  const requestPath = url.pathname + url.search;
+
+  // Ensure we have auth cookies
+  if (!authCookieString || !isSessionFresh()) {
     const context = await ensureAuthenticatedContext();
-    const response = await context.request.get(secureUrl, {
-      headers: {
-        Accept: 'application/pdf,text/html;q=0.9,*/*;q=0.8',
-        Referer: 'https://eservices.icai.org/'
-      },
-      timeout: 90000
-    });
+    const cookies = await context.cookies();
+    authCookieString = cookies
+      .filter(c => c.domain.includes('icai.org'))
+      .map(c => `${c.name}=${c.value}`).join('; ');
+  }
 
-    const body = await response.body();
-    const contentType = (response.headers()['content-type'] || '').toLowerCase();
-
-    if (!response.ok()) {
-      throw new Error(`ICAI request failed: HTTP ${response.status()}`);
+  // Undici pool request — blazing fast
+  const { statusCode, headers, body: responseBody } = await icaiPool.request({
+    path: requestPath,
+    method: 'GET',
+    headers: {
+      'Cookie': authCookieString,
+      'Accept': 'application/pdf',
+      'Referer': 'https://eservices.icai.org/',
+      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      'Connection': 'keep-alive'
     }
+  });
 
-    if (contentType.includes('text/html') || !isPdfBuffer(body)) {
-      throw new Error('ICAI returned non-PDF response (likely blocked or SRN not found)');
+  const chunks = [];
+  for await (const chunk of responseBody) {
+    chunks.push(chunk);
+  }
+  const body = Buffer.concat(chunks);
+
+  const contentType = (headers['content-type'] || '').toLowerCase();
+
+  if (statusCode >= 400 || contentType.includes('text/html') || !isPdfBuffer(body)) {
+    const bodyText = body.toString('utf-8').slice(0, 500);
+    if (!_retried && (statusCode === 403 || bodyText.includes('Sign In') || bodyText.includes('login') || bodyText.includes('session') || bodyText.includes('Access Denied'))) {
+      // Session expired or blocked — reauth once
+      authCookieString = '';
+      await closeAuthContext();
+      authAt = 0;
+      const context = await ensureAuthenticatedContext();
+      const cookies = await context.cookies();
+      authCookieString = cookies
+        .filter(c => c.domain.includes('icai.org'))
+        .map(c => `${c.name}=${c.value}`).join('; ');
+      return fetchStudentCardData(srn, true);
     }
-
-    const pdf = await pdfParse(body);
-    const parsed = parseStudentCardText(pdf.text || '', srn);
-    if (!parsed.srn || !parsed.name) {
-      throw new Error('Unable to parse PDF content for SRN');
+    if (bodyText.includes('No Record') || bodyText.includes('Invalid')) {
+      throw new Error('SRN not found');
     }
+    throw new Error(`HTTP ${statusCode}`);
+  }
 
-    return parsed;
-  };
+  const pdf = await pdfParse(body);
+  const parsed = parseStudentCardText(pdf.text || '', srn);
+  if (!parsed.srn || !parsed.name) {
+    throw new Error('PDF parse failed');
+  }
 
+  return parsed;
+}
+
+app.use(express.json({ limit: '500mb' }));
+app.use(express.static(path.join(__dirname, 'web')));
+
+// ─── BACKGROUND JOB SYSTEM ─────────────────────────────────────────────────
+// Jobs run on the server independently of the client. Tab band karo, net band karo — job chalti rahegi.
+const jobs = new Map(); // jobId -> { id, status, prefix, startNo, count, concurrency, completed, ok, failed, total, startedAt, completedAt, csvFile, error }
+
+function generateJobId() {
+  return `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function getJobsDir() {
+  const dir = path.join(__dirname, 'output', 'jobs');
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+async function runBackgroundJob(job) {
   try {
-    return await attemptFetch();
-  } catch (error) {
-    if (!shouldReauth(error)) {
-      throw error;
+    const srns = buildSrnList(job.prefix, job.startNo, job.count);
+    const total = srns.length;
+    job.total = total;
+    job.status = 'running';
+
+    const results = new Array(total);
+    let cursor = 0;
+    let completed = 0;
+    let okCount = 0;
+    let failedCount = 0;
+
+    const worker = async () => {
+      while (true) {
+        if (job.status === 'cancelled') break;
+        const idx = cursor;
+        cursor += 1;
+        if (idx >= total) break;
+
+        const srn = srns[idx];
+        try {
+          const data = await fetchStudentCardData(srn);
+          results[idx] = { status: 'ok', srn, data, error: '' };
+          okCount += 1;
+        } catch (error) {
+          results[idx] = { status: 'error', srn, data: null, error: error && error.message ? error.message : 'Error' };
+          failedCount += 1;
+        }
+
+        completed += 1;
+        job.completed = completed;
+        job.ok = okCount;
+        job.failed = failedCount;
+      }
+    };
+
+    const workerCount = Math.max(1, Math.min(job.concurrency, total));
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+    // Build CSV
+    const headers = [
+      'Status', 'Error', 'SRN', 'Name', 'Sex', 'Date of Birth', 'Father', 'Mother',
+      'Email', 'Mobile', 'Aadhar Category', 'Correspondence Address', 'Permanent Address', 'Pin',
+      'CA Foundation', 'CA Foundation Registration Date', 'CA Inter', 'CA Inter Registration Date',
+      'CA Final', 'CA Final Registration Date', 'Course & Exam Details'
+    ];
+
+    const csvLines = [buildCsvLine(headers)];
+    for (const row of results) {
+      if (!row) continue;
+      const data = row.data || {};
+      const foundationRow = getCourseRowByLevel(data.courseRows, 'FOUNDATION');
+      const interRow = getCourseRowByLevel(data.courseRows, 'INTERMEDIATE');
+      const finalRow = getCourseRowByLevel(data.courseRows, 'FINAL');
+      csvLines.push(buildCsvLine([
+        row.status, row.error, row.srn,
+        data.name || '', data.sex || '', data.dob || '',
+        data.father || '', data.mother || '', data.email || '', data.mobile || '',
+        data.aadharCategory || '', data.correspondenceAddress || '', data.permanentAddress || '', data.pin || '',
+        formatCourseAvailability(foundationRow), (foundationRow && foundationRow.registrationDate) || '',
+        formatCourseAvailability(interRow), (interRow && interRow.registrationDate) || '',
+        formatCourseAvailability(finalRow), (finalRow && finalRow.registrationDate) || '',
+        normalizeCourseDetails(data.courseRows || [])
+      ]));
     }
 
-    await closeAuthContext();
-    authAt = 0;
-    return await attemptFetch();
+    const csvContent = csvLines.join('\n') + '\n';
+    const fileName = `job_${job.prefix}${String(job.startNo).padStart(7, '0')}_plus${job.count}_${Date.now()}.csv`;
+    const filePath = path.join(getJobsDir(), fileName);
+    fs.writeFileSync(filePath, csvContent, 'utf-8');
+
+    job.status = 'complete';
+    job.completedAt = Date.now();
+    job.csvFile = fileName;
+    job.elapsedMs = job.completedAt - job.startedAt;
+    console.log(`[JOB] ${job.id} complete: ${okCount} ok, ${failedCount} failed, ${job.elapsedMs}ms`);
+  } catch (error) {
+    job.status = 'failed';
+    job.error = error && error.message ? error.message : 'Job failed';
+    job.completedAt = Date.now();
+    console.log(`[JOB] ${job.id} failed: ${job.error}`);
   }
 }
 
-app.use(express.json());
-app.use(express.static(path.join(__dirname, 'web')));
+// Start a background job
+app.post('/api/jobs/start', (req, res) => {
+  const prefix = normalizeStudentPrefix(req.body.prefix) || DEFAULT_STUDENT_PREFIX;
+  const startNo = Number(String(req.body.start || req.body.startNo || '').replace(/\D/g, ''));
+  const count = Number(req.body.count);
+  const concurrency = Math.max(1, Math.min(Number(req.body.concurrency) || DEFAULT_EXPORT_CONCURRENCY, MAX_EXPORT_CONCURRENCY));
+
+  if (!prefix || !Number.isFinite(startNo) || !Number.isFinite(count) || count < 1) {
+    return res.status(400).json({ ok: false, error: 'Invalid parameters. Need prefix, start, count.' });
+  }
+
+  if (count > MAX_EXPORT_COUNT) {
+    return res.status(400).json({ ok: false, error: `Max ${MAX_EXPORT_COUNT} per job.` });
+  }
+
+  const job = {
+    id: generateJobId(),
+    status: 'starting',
+    prefix,
+    startNo,
+    count,
+    concurrency,
+    total: count,
+    completed: 0,
+    ok: 0,
+    failed: 0,
+    startedAt: Date.now(),
+    completedAt: null,
+    csvFile: null,
+    error: null,
+    elapsedMs: 0
+  };
+
+  jobs.set(job.id, job);
+
+  // Fire and forget — runs in background
+  runBackgroundJob(job);
+
+  return res.json({ ok: true, jobId: job.id, message: 'Job started. Tab band karo, server pe chalti rahegi.' });
+});
+
+// Get job status
+app.get('/api/jobs/status/:id', (req, res) => {
+  const job = jobs.get(req.params.id);
+  if (!job) return res.status(404).json({ ok: false, error: 'Job not found' });
+
+  const elapsed = job.completedAt ? job.elapsedMs : Date.now() - job.startedAt;
+  const avgMs = job.completed > 0 ? elapsed / job.completed : 0;
+  const etaMs = job.completed > 0 ? Math.round(avgMs * (job.total - job.completed)) : 0;
+
+  return res.json({
+    ok: true,
+    job: {
+      id: job.id,
+      status: job.status,
+      prefix: job.prefix,
+      startSrn: `${job.prefix}${String(job.startNo).padStart(7, '0')}`,
+      count: job.count,
+      total: job.total,
+      completed: job.completed,
+      ok: job.ok,
+      failed: job.failed,
+      elapsedMs: elapsed,
+      etaMs,
+      csvFile: job.csvFile,
+      error: job.error
+    }
+  });
+});
+
+// List all jobs
+app.get('/api/jobs', (_req, res) => {
+  const list = Array.from(jobs.values()).map(job => ({
+    id: job.id,
+    status: job.status,
+    prefix: job.prefix,
+    startSrn: `${job.prefix}${String(job.startNo).padStart(7, '0')}`,
+    count: job.count,
+    completed: job.completed,
+    ok: job.ok,
+    failed: job.failed,
+    elapsedMs: job.completedAt ? job.elapsedMs : Date.now() - job.startedAt,
+    csvFile: job.csvFile
+  })).sort((a, b) => b.elapsedMs - a.elapsedMs);
+
+  return res.json({ ok: true, jobs: list });
+});
+
+// Download completed job CSV
+app.get('/api/jobs/download/:id', (req, res) => {
+  const job = jobs.get(req.params.id);
+  if (!job) return res.status(404).json({ ok: false, error: 'Job not found' });
+  if (job.status !== 'complete' || !job.csvFile) {
+    return res.status(400).json({ ok: false, error: 'Job not complete yet' });
+  }
+
+  const filePath = path.join(getJobsDir(), job.csvFile);
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ ok: false, error: 'CSV file not found' });
+  }
+
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="${job.csvFile}"`);
+  return res.sendFile(filePath);
+});
+
+// Cancel a running job
+app.post('/api/jobs/cancel/:id', (req, res) => {
+  const job = jobs.get(req.params.id);
+  if (!job) return res.status(404).json({ ok: false, error: 'Job not found' });
+  if (job.status === 'complete' || job.status === 'failed') {
+    return res.status(400).json({ ok: false, error: 'Job already finished' });
+  }
+  job.status = 'cancelled';
+  job.completedAt = Date.now();
+  job.elapsedMs = job.completedAt - job.startedAt;
+  return res.json({ ok: true, message: 'Job cancelled' });
+});
+
+// ─── END BACKGROUND JOB SYSTEM ─────────────────────────────────────────────
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, uptime: process.uptime() });
@@ -670,6 +1145,12 @@ app.post('/api/login', async (_req, res) => {
     const ctx = await ensureAuthenticatedContext();
     console.log('[LOGIN] Auth context created:', !!ctx);
     if (ctx) {
+      // Extract cookies immediately for direct HTTP fetches
+      const cookies = await ctx.cookies();
+      authCookieString = cookies
+        .filter(c => c.domain.includes('icai.org'))
+        .map(c => `${c.name}=${c.value}`).join('; ');
+      console.log('[LOGIN] Cookies extracted:', cookies.length, 'total,', authCookieString.length, 'chars for icai.org');
       return res.json({ ok: true, message: 'Authenticated' });
     }
     return res.status(401).json({ ok: false, error: 'Authentication failed' });
@@ -694,13 +1175,22 @@ app.get('/api/csv-files', async (_req, res) => {
   }
 });
 
+app.get('/api/config', async (_req, res) => {
+  return res.json({
+    ok: true,
+    studentPrefix: DEFAULT_STUDENT_PREFIX,
+    defaultStartNumber: DEFAULT_START_NUMBER,
+    defaultStartSrn: DEFAULT_START_SRN
+  });
+});
+
 app.get('/api/search', async (req, res) => {
   const srn = String(req.query.srn || '').trim().toUpperCase();
   console.log('[SEARCH] SRN:', srn);
   if (!/^[A-Z]{3}\d{7}$/.test(srn)) {
     return res.status(400).json({
       ok: false,
-      error: 'Invalid SRN format. Example: WRO0873000'
+      error: `Invalid SRN format. Example: ${DEFAULT_START_SRN}`
     });
   }
 
@@ -762,26 +1252,26 @@ app.get('/api/search-by-mobile', async (req, res) => {
 });
 
 app.get('/api/export-range', async (req, res) => {
-  const expr = String(req.query.range || '').trim();
-  const parsed = parseSrnRangeExpression(expr);
+  const parsed = parseRangeRequest(req.query);
 
   if (!parsed) {
     return res.status(400).json({
       ok: false,
-      error: 'Invalid range format. Example: WRO0942133 +1000'
+      error: `Invalid range format. Use ${DEFAULT_START_SRN} +1000 or prefix=${DEFAULT_STUDENT_PREFIX}&start=${DEFAULT_START_NUMBER}&count=1000`
     });
   }
 
-  if (parsed.count > 2000) {
+  if (parsed.count > MAX_EXPORT_COUNT) {
     return res.status(400).json({
       ok: false,
-      error: 'Range too large. Max allowed is +2000 per request.'
+      error: `Range too large. Max allowed is +${MAX_EXPORT_COUNT} per request.`
     });
   }
 
   const srns = buildSrnList(parsed.prefix, parsed.startNo, parsed.count);
+  const concurrency = resolveExportConcurrency(req.query.concurrency, parsed.count);
   const startedAt = Date.now();
-  const rows = await fetchRangeRows(srns, 6);
+  const rows = await fetchRangeRows(srns, concurrency);
 
   const headers = [
     'Status',
@@ -798,12 +1288,18 @@ app.get('/api/export-range', async (req, res) => {
     'Correspondence Address',
     'Permanent Address',
     'Pin',
+    'CA Foundation',
+    'CA Foundation Registration Date',
+    'CA Inter',
+    'CA Inter Registration Date',
     'Course & Exam Details'
   ];
 
   const csvLines = [buildCsvLine(headers)];
   for (const row of rows) {
     const data = row.data || {};
+    const foundationRow = getCourseRowByLevel(data.courseRows, 'FOUNDATION');
+    const interRow = getCourseRowByLevel(data.courseRows, 'INTERMEDIATE');
     csvLines.push(
       buildCsvLine([
         row.status,
@@ -820,6 +1316,10 @@ app.get('/api/export-range', async (req, res) => {
         data.correspondenceAddress || '',
         data.permanentAddress || '',
         data.pin || '',
+        formatCourseAvailability(foundationRow),
+        (foundationRow && foundationRow.registrationDate) || '',
+        formatCourseAvailability(interRow),
+        (interRow && interRow.registrationDate) || '',
         normalizeCourseDetails(data.courseRows || [])
       ])
     );
@@ -835,8 +1335,219 @@ app.get('/api/export-range', async (req, res) => {
   res.setHeader('X-Export-Total', String(rows.length));
   res.setHeader('X-Export-Ok', String(okCount));
   res.setHeader('X-Export-Failed', String(failedCount));
+  res.setHeader('X-Export-Concurrency', String(concurrency));
   res.setHeader('X-Export-Duration-Ms', String(elapsedMs));
   return res.send(`${csvLines.join('\n')}\n`);
+});
+
+// SSE streaming export with real-time progress
+app.get('/api/export-range-stream', async (req, res) => {
+  const parsed = parseRangeRequest(req.query);
+
+  if (!parsed) {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.write(`data: ${JSON.stringify({ type: 'error', error: `Invalid range format. Use ${DEFAULT_START_SRN} +1000` })}\n\n`);
+    return res.end();
+  }
+
+  if (parsed.count > MAX_EXPORT_COUNT) {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.write(`data: ${JSON.stringify({ type: 'error', error: `Range too large. Max allowed is +${MAX_EXPORT_COUNT}` })}\n\n`);
+    return res.end();
+  }
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders();
+
+  const srns = buildSrnList(parsed.prefix, parsed.startNo, parsed.count);
+  const concurrency = resolveExportConcurrency(req.query.concurrency, parsed.count);
+  const total = srns.length;
+  const startedAt = Date.now();
+
+  // Send initial info
+  res.write(`data: ${JSON.stringify({ type: 'start', total, concurrency, startSrn: parsed.startSrn })}\n\n`);
+
+  const results = new Array(srns.length);
+  let completed = 0;
+  let okCount = 0;
+  let failedCount = 0;
+  let aborted = false;
+
+  req.on('close', () => { aborted = true; });
+
+  let cursor = 0;
+  const worker = async () => {
+    while (!aborted) {
+      const idx = cursor;
+      cursor += 1;
+      if (idx >= srns.length) break;
+
+      const srn = srns[idx];
+      let data = null;
+      let fetchError = '';
+
+      try {
+        data = await fetchStudentCardData(srn);
+      } catch (error) {
+        fetchError = error && error.message ? error.message : 'Unknown error';
+      }
+
+      if (aborted) break;
+
+      if (data) {
+        results[idx] = { status: 'ok', srn, data, error: '' };
+        okCount += 1;
+      } else {
+        results[idx] = { status: 'error', srn, data: null, error: fetchError };
+        failedCount += 1;
+      }
+
+      completed += 1;
+      const elapsedMs = Date.now() - startedAt;
+      const avgMs = elapsedMs / completed;
+      const etaMs = Math.round(avgMs * (total - completed));
+
+      // Send progress every 20 completions to reduce SSE overhead
+      if (!aborted && (completed % 20 === 0 || completed === total)) {
+        res.write(`data: ${JSON.stringify({
+          type: 'progress',
+          completed,
+          total,
+          ok: okCount,
+          failed: failedCount,
+          elapsedMs,
+          etaMs,
+          lastSrn: srn,
+          lastStatus: data ? 'ok' : 'error',
+          lastName: data ? data.name : ''
+        })}\n\n`);
+      }
+    }
+  };
+
+  const workerCount = Math.max(1, Math.min(concurrency, srns.length));
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+  if (aborted) return;
+
+  // Build CSV
+  const headers = [
+    'Status', 'Error', 'SRN', 'Name', 'Sex', 'Date of Birth', 'Father', 'Mother',
+    'Email', 'Mobile', 'Aadhar Category', 'Correspondence Address', 'Permanent Address', 'Pin',
+    'CA Foundation', 'CA Foundation Registration Date', 'CA Inter', 'CA Inter Registration Date',
+    'Course & Exam Details'
+  ];
+
+  const csvLines = [buildCsvLine(headers)];
+  for (const row of results) {
+    if (!row) continue;
+    const data = row.data || {};
+    const foundationRow = getCourseRowByLevel(data.courseRows, 'FOUNDATION');
+    const interRow = getCourseRowByLevel(data.courseRows, 'INTERMEDIATE');
+    csvLines.push(buildCsvLine([
+      row.status, row.error, row.srn,
+      data.name || '', data.sex || '', data.dob || '',
+      data.father || '', data.mother || '', data.email || '', data.mobile || '',
+      data.aadharCategory || '', data.correspondenceAddress || '', data.permanentAddress || '', data.pin || '',
+      formatCourseAvailability(foundationRow), (foundationRow && foundationRow.registrationDate) || '',
+      formatCourseAvailability(interRow), (interRow && interRow.registrationDate) || '',
+      normalizeCourseDetails(data.courseRows || [])
+    ]));
+  }
+
+  const csvContent = `${csvLines.join('\n')}\n`;
+  const elapsedMs = Date.now() - startedAt;
+  const fileName = `students_${parsed.startSrn}_plus${parsed.count}_${Date.now()}.csv`;
+
+  // Send complete event with CSV as base64
+  res.write(`data: ${JSON.stringify({
+    type: 'complete',
+    total,
+    ok: okCount,
+    failed: failedCount,
+    elapsedMs,
+    fileName,
+    csv: Buffer.from(csvContent, 'utf-8').toString('base64')
+  })}\n\n`);
+
+  res.end();
+});
+
+// Multer for handling file uploads (memory storage for merge)
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 500 * 1024 * 1024 } });
+
+// Upload-based merge: accepts uploaded CSV files from frontend
+app.post('/api/merge-csv-upload', upload.array('files', 500), async (req, res) => {
+  try {
+    const files = req.files || [];
+    const dedupeSrn = req.body && req.body.dedupeSrn !== 'false';
+
+    if (files.length < 2) {
+      return res.status(400).json({ ok: false, error: 'Kam se kam 2 CSV files upload karo.' });
+    }
+
+    let primaryHeaders = null;
+    const outputLines = [];
+    const seenSrns = new Set();
+    let mergedCount = 0;
+    let duplicateCount = 0;
+
+    for (const file of files) {
+      const text = file.buffer.toString('utf-8');
+      const lines = text.split(/\r?\n/).filter(l => l.trim());
+      if (lines.length === 0) continue;
+
+      const sourceHeaders = parseCsvLine(lines[0]).map(h => h.trim());
+      if (!primaryHeaders) {
+        primaryHeaders = sourceHeaders;
+        outputLines.push(buildCsvLine(primaryHeaders));
+      }
+
+      const srnIdx = primaryHeaders.indexOf('SRN');
+
+      for (let i = 1; i < lines.length; i++) {
+        const sourceValues = parseCsvLine(lines[i]);
+        const mappedValues = primaryHeaders.map(header => {
+          const idx = sourceHeaders.indexOf(header);
+          return idx >= 0 ? sourceValues[idx] || '' : '';
+        });
+
+        if (dedupeSrn && srnIdx >= 0) {
+          const key = String(mappedValues[srnIdx] || '').trim().toUpperCase();
+          if (key) {
+            if (seenSrns.has(key)) { duplicateCount++; continue; }
+            seenSrns.add(key);
+          }
+        }
+
+        outputLines.push(buildCsvLine(mappedValues));
+        mergedCount++;
+      }
+    }
+
+    if (!primaryHeaders) {
+      return res.status(400).json({ ok: false, error: 'No valid CSV data found.' });
+    }
+
+    const csv = outputLines.join('\n') + '\n';
+    const fileName = `merged_upload_${Date.now()}.csv`;
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    res.setHeader('X-Merge-Files', String(files.length));
+    res.setHeader('X-Merge-Rows', String(mergedCount));
+    res.setHeader('X-Merge-Duplicates', String(duplicateCount));
+    return res.send(csv);
+  } catch (error) {
+    return res.status(500).json({ ok: false, error: error && error.message ? error.message : 'Merge failed' });
+  }
 });
 
 app.post('/api/merge-csv', async (req, res) => {
@@ -850,10 +1561,10 @@ app.post('/api/merge-csv', async (req, res) => {
     });
   }
 
-  if (files.length > 100) {
+  if (files.length > 500) {
     return res.status(400).json({
       ok: false,
-      error: 'Too many files selected. Max 100 files per merge request.'
+      error: 'Too many files selected. Max 500 files per merge request.'
     });
   }
 

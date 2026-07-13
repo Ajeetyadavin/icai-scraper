@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: icai-scraper
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    envVars:
+      - key: PORT
+        value: "4173"
+      - key: ICAI_USER_ID
+        sync: false
+      - key: ICAI_PASSWORD
+        sync: false
+    healthCheckPath: /api/health
+    autoDeploy: true

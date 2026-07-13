@@ -11,6 +11,19 @@
   </head>
   <body>
     <div id="root"></div>
-    <script type="text/babel" src="/app.jsx"></script>
+    <script>
+      fetch('/app.jsx')
+        .then(function(r) { return r.text(); })
+        .then(function(code) {
+          var transformed = Babel.transform(code, {
+            presets: [['react', { runtime: 'classic' }]]
+          }).code;
+          var fn = new Function(transformed);
+          fn();
+        })
+        .catch(function(err) {
+          document.getElementById('root').innerHTML = '<p style="color:red">Failed to load app: ' + err.message + '</p>';
+        });
+    </script>
   </body>
 </html>
