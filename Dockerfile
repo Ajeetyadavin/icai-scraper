@@ -22,16 +22,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-freefont-ttf \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Playwright browsers first (cached separately)
-RUN npx playwright install chromium
-
 WORKDIR /app
 
 # Copy package files for dependency caching
 COPY package.json package-lock.json ./
 
-# Install production deps only (skip postinstall since chromium already installed)
-RUN npm ci --omit=dev --ignore-scripts
+# Install all deps first (including playwright)
+RUN npm ci --ignore-scripts
+
+# Now install chromium AFTER npm ci (so it matches the installed playwright version)
+RUN npx playwright install chromium
 
 # Copy app code
 COPY . .
