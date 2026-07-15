@@ -1427,6 +1427,148 @@ app.get('/api/extract-recent', async (req, res) => {
   });
 });
 
+// ─── EXTRACT BY DATE ────────────────────────────────────────────────────────
+// Search a range of SRNs and return only those with registration date matching target date
+
+function normalizeDate(dateStr) {
+  // Convert "05/May/2024" or "05/Jun/2026" to "YYYY-MM-DD" for comparison
+  const months = { jan:'01', feb:'02', mar:'03', apr:'04', may:'05', jun:'06', jul:'07', aug:'08', sep:'09', oct:'10', nov:'11', dec:'12' };
+  const match = String(dateStr || '').match(/^(\d{2})\/([A-Za-z]{3})\/(\d{4})$/);
+  if (!match) return '';
+  const [, day, mon, year] = match;
+  const mm = months[mon.toLowerCase()] || '';
+  if (!mm) return '';
+  return `${year}-${mm}-${day}`;
+}
+
+function recordMatchesDate(data, targetDate) {
+  if (!data || !data.courseRows) return false;
+  // Check if ANY course registration date matches target
+  for (const row of data.courseRows) {
+    const regDate = normalizeDate(row.registrationDate);
+    const reRegDate = normalizeDate(row.reRegistrationDate);
+    if (regDate === targetDate || reRegDate === targetDate) return true;
+  }
+  return false;
+}
+
+app.get('/api/extract-by-date', async (req, res) => {
+  const prefix = normalizeStudentPrefix(req.query.prefix) || DEFAULT_STUDENT_PREFIX;
+  const targetDate = String(req.query.date || '').trim(); // Expected: YYYY-MM-DD
+  const maxScan = Math.min(Number(req.query.maxScan) || 5000, 50000);
+  const concurrency = Math.min(Number(req.query.concurrency) || 30, 100);
+
+  if (!targetDate || !/^\d{4}-\d{2}-\d{2}$/.test(targetDate)) {
+    return res.status(400).json({ ok: false, error: 'Valid date chahiye (YYYY-MM-DD format)' });
+  }
+
+  // Get latest known SRN as starting point
+  let startFrom;
+  const cached = await getCachedLatest(prefix);
+  if (cached && cached.number > 0) {
+    startFrom = cached.number;
+  } else {
+    return res.status(400).json({ ok: false, error: `${prefix} ka latest SRN pehle find karo (Find Latest button use karo)` });
+  }
+
+  console.log(`[EXTRACT-BY-DATE] ${prefix} | date=${targetDate} | startFrom=${startFrom} | maxScan=${maxScan}`);
+
+  // Scan backward from latest, collect records matching target date
+  const matchedRecords = [];
+  let scanned = 0;
+  let consecutiveOldDates = 0;
+  const MAX_OLD_BEFORE_STOP = 200; // Stop if 200 consecutive records are older than target
+
+  let cursor = startFrom;
+
+  while (scanned < maxScan && cursor > 0 && consecutiveOldDates < MAX_OLD_BEFORE_STOP) {
+    // Fetch a batch
+    const batchSize = Math.min(concurrency, maxScan - scanned);
+    const batch = [];
+
+    for (let i = 0; i < batchSize && cursor > 0; i++) {
+      batch.push({ no: cursor, srn: `${prefix}${String(cursor).padStart(7, '0')}` });
+      cursor -= 1;
+    }
+
+    const batchResults = await Promise.all(
+      batch.map(async (item) => {
+        try {
+          const data = await fetchStudentCardData(item.srn);
+          return { srn: item.srn, no: item.no, data, ok: true };
+        } catch (e) {
+          return { srn: item.srn, no: item.no, data: null, ok: false };
+        }
+      })
+    );
+
+    for (const r of batchResults) {
+      scanned += 1;
+      if (!r.ok || !r.data) continue;
+
+      if (recordMatchesDate(r.data, targetDate)) {
+        matchedRecords.push(r.data);
+        consecutiveOldDates = 0;
+      } else {
+        // Check if this record's dates are all older than target
+        let allOlder = true;
+        if (r.data.courseRows) {
+          for (const row of r.data.courseRows) {
+            const rd = normalizeDate(row.registrationDate);
+            if (rd && rd >= targetDate) { allOlder = false; break; }
+          }
+        }
+        if (allOlder) {
+          consecutiveOldDates += 1;
+        } else {
+          consecutiveOldDates = 0;
+        }
+      }
+    }
+  }
+
+  // Sort matched records by SRN
+  matchedRecords.sort((a, b) => (a.srn || '').localeCompare(b.srn || ''));
+
+  // Build CSV
+  const headers = [
+    'SRN', 'Name', 'Sex', 'Date of Birth', 'Father', 'Mother',
+    'Email', 'Mobile', 'Aadhar Category', 'Correspondence Address', 'Permanent Address', 'Pin',
+    'CA Foundation', 'CA Foundation Reg Date', 'CA Inter', 'CA Inter Reg Date',
+    'CA Final', 'CA Final Reg Date', 'Course & Exam Details'
+  ];
+
+  const csvLines = [buildCsvLine(headers)];
+  for (const data of matchedRecords) {
+    const foundationRow = getCourseRowByLevel(data.courseRows, 'FOUNDATION');
+    const interRow = getCourseRowByLevel(data.courseRows, 'INTERMEDIATE');
+    const finalRow = getCourseRowByLevel(data.courseRows, 'FINAL');
+    csvLines.push(buildCsvLine([
+      data.srn || '', data.name || '', data.sex || '', data.dob || '',
+      data.father || '', data.mother || '', data.email || '', data.mobile || '',
+      data.aadharCategory || '', data.correspondenceAddress || '', data.permanentAddress || '', data.pin || '',
+      formatCourseAvailability(foundationRow), (foundationRow && foundationRow.registrationDate) || '',
+      formatCourseAvailability(interRow), (interRow && interRow.registrationDate) || '',
+      formatCourseAvailability(finalRow), (finalRow && finalRow.registrationDate) || '',
+      normalizeCourseDetails(data.courseRows || [])
+    ]));
+  }
+
+  const csvContent = csvLines.join('\n') + '\n';
+
+  console.log(`[EXTRACT-BY-DATE] Done. Scanned ${scanned}, matched ${matchedRecords.length} for ${targetDate}`);
+
+  return res.json({
+    ok: true,
+    prefix,
+    targetDate,
+    scanned,
+    totalFound: matchedRecords.length,
+    records: matchedRecords,
+    csv: Buffer.from(csvContent, 'utf-8').toString('base64')
+  });
+});
+
 app.post('/api/login', async (_req, res) => {
   try {
     console.log('[LOGIN] Endpoint called');

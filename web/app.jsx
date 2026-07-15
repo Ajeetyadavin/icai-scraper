@@ -147,6 +147,13 @@ function App() {
   const [recentRecords, setRecentRecords] = useState([]);
   const [recentStatus, setRecentStatus] = useState('');
 
+  // Date-wise extraction state
+  const [datePrefix, setDatePrefix] = useState('WRO');
+  const [targetDate, setTargetDate] = useState(new Date().toISOString().split('T')[0]);
+  const [dateLoading, setDateLoading] = useState(false);
+  const [dateStatus, setDateStatus] = useState('');
+  const [dateRecords, setDateRecords] = useState([]);
+
   const cleanedSrn = useMemo(() => query.trim().toUpperCase(), [query]);
   const cleanedMobile = useMemo(() => query.replace(/\D/g, '').slice(-10), [query]);
   const courseRows = useMemo(() => {
@@ -337,6 +344,43 @@ function App() {
       setRecentStatus(err.message || 'Extraction failed');
     } finally {
       setRecentLoading(false);
+    }
+  }
+
+  async function onExtractByDate(e) {
+    e.preventDefault();
+    setDateLoading(true);
+    setDateRecords([]);
+    setDateStatus('Searching for ' + datePrefix + ' registrations on ' + targetDate + '...');
+
+    try {
+      var res = await fetch('/api/extract-by-date?prefix=' + datePrefix + '&date=' + targetDate);
+      var json = await res.json();
+      if (!res.ok || !json.ok) throw new Error(json.error || 'Failed');
+      setDateRecords(json.records || []);
+      setDateStatus('Found ' + json.totalFound + ' records for ' + targetDate + ' (scanned ' + json.scanned + ' SRNs)');
+
+      // Auto download CSV
+      if (json.csv && json.totalFound > 0) {
+        var csvBytes = atob(json.csv);
+        var uint8Array = new Uint8Array(csvBytes.length);
+        for (var i = 0; i < csvBytes.length; i++) {
+          uint8Array[i] = csvBytes.charCodeAt(i);
+        }
+        var blob = new Blob([uint8Array], { type: 'text/csv;charset=utf-8' });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = datePrefix + '_registrations_' + targetDate + '.csv';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      }
+    } catch (err) {
+      setDateStatus(err.message || 'Failed');
+    } finally {
+      setDateLoading(false);
     }
   }
 
@@ -814,6 +858,58 @@ function App() {
                     )}
                   </div>
                 </div>
+              )}
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* ─── DATE-WISE REGISTRATION DOWNLOAD ─── */}
+      {isLoggedIn && (
+        <section className="searchCard" style={{marginTop: 16}}>
+          <h3>Date-wise Registration Download</h3>
+          <div style={{fontSize: 13, color: '#666', marginBottom: 10}}>
+            Date pick karo — sirf us din ki registrations ka CSV download hoga.
+          </div>
+          <form onSubmit={onExtractByDate} style={{display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center'}}>
+            <select
+              value={datePrefix}
+              onChange={function(e) { setDatePrefix(e.target.value); }}
+              style={{padding: '8px 12px', borderRadius: 6, border: '1px solid #ccc', fontWeight: 600}}
+            >
+              <option value="WRO">WRO</option>
+              <option value="CRO">CRO</option>
+              <option value="ERO">ERO</option>
+              <option value="SRO">SRO</option>
+              <option value="NRO">NRO</option>
+            </select>
+            <input
+              type="date"
+              value={targetDate}
+              onChange={function(e) { setTargetDate(e.target.value); }}
+              style={{padding: '8px 12px', borderRadius: 6, border: '1px solid #ccc'}}
+            />
+            <button
+              type="submit"
+              className="mergeBtn"
+              disabled={dateLoading}
+              style={{background: '#1a73e8', color: '#fff', fontWeight: 600}}
+            >
+              {dateLoading ? 'Searching...' : 'Download Date CSV'}
+            </button>
+          </form>
+          {dateStatus && <div className="metaLine" style={{marginTop: 8}}>{dateStatus}</div>}
+          {dateRecords.length > 0 && (
+            <div style={{marginTop: 10, fontSize: 13, maxHeight: 200, overflow: 'auto'}}>
+              {dateRecords.slice(0, 15).map(function(r, i) {
+                return (
+                  <div key={i} style={{padding: '3px 0', borderBottom: '1px solid #eee'}}>
+                    <strong>{r.srn}</strong> — {r.name} | {r.mobile}
+                  </div>
+                );
+              })}
+              {dateRecords.length > 15 && (
+                <div style={{color: '#888', padding: '4px 0'}}>...aur {dateRecords.length - 15} records CSV mein</div>
               )}
             </div>
           )}
