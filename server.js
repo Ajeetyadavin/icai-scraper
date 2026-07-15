@@ -1295,7 +1295,7 @@ app.get('/api/find-latest', async (req, res) => {
       cachedDate: cached ? cached.foundAt : null,
       newRecordsSince: cached ? exact - cached.number : 0,
       message: cached 
-        ? `Latest: ${latestSrn} (${exact - cached.number} new since ${cached.foundAt.split('T')[0]})`
+        ? `Latest: ${latestSrn} (${exact - cached.number} new since ${(cached.foundAt || '').split('T')[0] || 'unknown'})`
         : `Latest: ${latestSrn} (first time — saved for next time)`
     });
   } catch (error) {

@@ -281,7 +281,7 @@ function App() {
 
     var cached = latestCache[prefix];
     if (cached) {
-      setLatestStatus(`${prefix}: Last known ${cached.srn} (${cached.foundAt.split('T')[0]}). Checking for new...`);
+      setLatestStatus(`${prefix}: Last known ${cached.srn} (${(cached.foundAt || '').split('T')[0] || ''}). Checking for new...`);
     } else {
       setLatestStatus(`${prefix} ka latest SRN search ho raha hai... (pehli baar — 30-60 sec lagega)`);
     }
@@ -753,7 +753,7 @@ function App() {
                   </button>
                   {c && (
                     <span style={{fontSize: 10, color: '#888'}}>
-                      {c.srn} ({c.foundAt.split('T')[0]})
+                      {c.srn} ({(c.foundAt || '').split('T')[0] || ''})
                     </span>
                   )}
                 </div>
