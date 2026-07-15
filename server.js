@@ -7,6 +7,7 @@ const { chromium } = require('playwright');
 const pdfParse = require('pdf-parse');
 const { Pool } = require('undici');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
+const sheetsDb = require('./src/sheets-db');
 
 // Remove Node.js default socket limits
 require('http').globalAgent.maxSockets = Infinity;
@@ -1132,7 +1133,7 @@ app.get('/api/health', (_req, res) => {
 
 const LATEST_CACHE_FILE = path.join(__dirname, 'output', 'latest-cache.json');
 
-function loadLatestCache() {
+function loadLatestCacheLocal() {
   try {
     if (fs.existsSync(LATEST_CACHE_FILE)) {
       return JSON.parse(fs.readFileSync(LATEST_CACHE_FILE, 'utf-8'));
@@ -1141,25 +1142,49 @@ function loadLatestCache() {
   return {};
 }
 
-function saveLatestCache(cache) {
+function saveLatestCacheLocal(cache) {
   const dir = path.dirname(LATEST_CACHE_FILE);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(LATEST_CACHE_FILE, JSON.stringify(cache, null, 2), 'utf-8');
 }
 
-function getCachedLatest(prefix) {
-  const cache = loadLatestCache();
-  return cache[prefix] || null; // { number, srn, foundAt (ISO date) }
+async function loadLatestCache() {
+  // Try Google Sheets first, fallback to local file
+  if (sheetsDb.isConfigured()) {
+    try {
+      const sheetsCache = await sheetsDb.getCacheFromSheets();
+      if (Object.keys(sheetsCache).length > 0) {
+        saveLatestCacheLocal(sheetsCache); // sync to local
+        return sheetsCache;
+      }
+    } catch (e) {
+      console.log('[CACHE] Sheets read failed, using local:', e.message);
+    }
+  }
+  return loadLatestCacheLocal();
 }
 
-function setCachedLatest(prefix, number) {
-  const cache = loadLatestCache();
-  cache[prefix] = {
-    number,
-    srn: `${prefix}${String(number).padStart(7, '0')}`,
-    foundAt: new Date().toISOString()
-  };
-  saveLatestCache(cache);
+async function getCachedLatest(prefix) {
+  const cache = await loadLatestCache();
+  return cache[prefix] || null;
+}
+
+async function setCachedLatest(prefix, number) {
+  const srn = `${prefix}${String(number).padStart(7, '0')}`;
+  const foundAt = new Date().toISOString();
+
+  // Save locally
+  const cache = loadLatestCacheLocal();
+  cache[prefix] = { number, srn, foundAt };
+  saveLatestCacheLocal(cache);
+
+  // Save to Google Sheets (persistent)
+  if (sheetsDb.isConfigured()) {
+    sheetsDb.saveCacheToSheets(prefix, number, srn, foundAt).catch(e => {
+      console.log('[CACHE] Sheets write failed:', e.message);
+    });
+  }
+
   return cache[prefix];
 }
 
@@ -1214,9 +1239,9 @@ async function linearScanLatest(prefix, startFrom, maxProbes) {
 }
 
 // Get cached latest info
-app.get('/api/latest-cache', (_req, res) => {
-  const cache = loadLatestCache();
-  return res.json({ ok: true, cache });
+app.get('/api/latest-cache', async (_req, res) => {
+  const cache = await loadLatestCache();
+  return res.json({ ok: true, cache, sheetsConnected: sheetsDb.isConfigured() });
 });
 
 app.get('/api/find-latest', async (req, res) => {
@@ -1367,13 +1392,22 @@ app.get('/api/extract-recent', async (req, res) => {
 
   const csvContent = csvLines.join('\n') + '\n';
 
+  // Save to Google Sheets in background
+  if (sheetsDb.isConfigured()) {
+    const validRecords = results.map(r => r.data).filter(Boolean);
+    sheetsDb.saveRecordsToSheets(validRecords).catch(e => {
+      console.log('[EXTRACT-RECENT] Sheets save failed:', e.message);
+    });
+  }
+
   return res.json({
     ok: true,
     prefix,
     latestSrn: `${prefix}${String(startFrom).padStart(7, '0')}`,
     totalFound: results.length,
     records: results.map(r => r.data),
-    csv: Buffer.from(csvContent, 'utf-8').toString('base64')
+    csv: Buffer.from(csvContent, 'utf-8').toString('base64'),
+    savedToSheets: sheetsDb.isConfigured()
   });
 });
 
