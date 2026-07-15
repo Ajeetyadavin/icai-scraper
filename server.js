@@ -1166,7 +1166,11 @@ async function loadLatestCache() {
 
 async function getCachedLatest(prefix) {
   const cache = await loadLatestCache();
-  return cache[prefix] || null;
+  const entry = cache[prefix] || null;
+  if (entry && Number.isFinite(Number(entry.number)) && Number(entry.number) > 0) {
+    return { ...entry, number: Number(entry.number) };
+  }
+  return null;
 }
 
 async function setCachedLatest(prefix, number) {
@@ -1268,8 +1272,15 @@ app.get('/api/find-latest', async (req, res) => {
     
     if (cached) {
       // Start from saved point — just scan forward from last known
-      searchLow = cached.number;
-      console.log(`[FIND-LATEST] Cache hit for ${prefix}: ${cached.srn} (found on ${cached.foundAt}). Scanning forward...`);
+      searchLow = Number(cached.number);
+      if (!Number.isFinite(searchLow) || searchLow < 1) {
+        // Bad cache data — do full binary search
+        console.log(`[FIND-LATEST] Bad cache for ${prefix} (number=${cached.number}). Full binary search.`);
+        cached = null;
+        searchLow = await binarySearchLatestSrn(prefix, range.low, range.high);
+      } else {
+        console.log(`[FIND-LATEST] Cache hit for ${prefix}: ${cached.srn} (found on ${cached.foundAt}). Scanning forward from ${searchLow}...`);
+      }
     } else {
       // No cache — full binary search
       console.log(`[FIND-LATEST] No cache for ${prefix}. Full binary search (${range.low}-${range.high})`);
@@ -1279,6 +1290,11 @@ app.get('/api/find-latest', async (req, res) => {
 
     // Linear scan forward from known/approx point to find exact latest
     const exact = await linearScanLatest(prefix, searchLow, 500);
+    
+    if (!Number.isFinite(exact) || exact < 1) {
+      throw new Error('Could not find any valid SRN in range');
+    }
+    
     const latestSrn = `${prefix}${String(exact).padStart(7, '0')}`;
     
     // Save to cache
