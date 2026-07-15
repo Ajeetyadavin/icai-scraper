@@ -688,9 +688,21 @@ function App() {
 
   return (
     <main className="page">
-      <section className="hero">
-        <h1>ICAI Instant Student Search</h1>
-        <form onSubmit={handleLogin} style={{marginTop: 18, marginBottom: 18, display: 'flex', gap: 12, alignItems: 'center'}}>
+      <header className="appHeader">
+        <div className="brandBlock">
+          <div className="brandMark" aria-hidden="true">IC</div>
+          <div>
+            <div className="eyebrow">ICAI DATA WORKSPACE</div>
+            <h1>Student Intelligence Console</h1>
+            <p>Search profiles, locate recent registrations, and manage exports from one secure workspace.</p>
+          </div>
+        </div>
+
+        <form className="sessionPanel" onSubmit={handleLogin}>
+          <div className={"sessionIndicator" + (isLoggedIn ? " online" : "") }>
+            <span className="statusDot" aria-hidden="true" />
+            <span>{isLoggedIn ? "ICAI session active" : "Session disconnected"}</span>
+          </div>
           <button
             type="submit"
             className={
@@ -699,29 +711,57 @@ function App() {
               (loginLoading ? " loading" : "")
             }
             disabled={loginLoading || isLoggedIn}
-            style={{minWidth: 120, minHeight: 44, fontSize: 18, fontWeight: 600}}
           >
             {loginLoading
-              ? "Connecting to server..."
+              ? "Connecting..."
               : isLoggedIn
                 ? "Connected"
-                : "Login"}
+                : "Connect ICAI"}
           </button>
-          {isLoggedIn && <span style={{color: '#0a8a3c', fontWeight: 600}}>● Connected</span>}
-          {loginError && <span style={{color: '#b3261e', fontWeight: 500}}>{loginError}</span>}
+          {loginError && <span className="sessionError">{loginError}</span>}
         </form>
+      </header>
+
+      <section className="overviewStrip" aria-label="Workspace overview">
+        <div className="overviewItem">
+          <span>Session</span>
+          <strong>{isLoggedIn ? 'Online' : 'Offline'}</strong>
+        </div>
+        <div className="overviewItem">
+          <span>Background jobs</span>
+          <strong>{jobsList.length}</strong>
+        </div>
+        <div className="overviewItem">
+          <span>Output files</span>
+          <strong>{csvFiles.length}</strong>
+        </div>
+        <div className="overviewItem">
+          <span>Cached regions</span>
+          <strong>{Object.keys(latestCache).length}</strong>
+        </div>
       </section>
 
       <button
         className={"cornerBulkBtn" + (showBulkTools ? " active" : "")}
-        title={showBulkTools ? "Hide bulk tools" : "Show bulk tools"}
+        title={showBulkTools ? "Hide advanced tools" : "Show advanced tools"}
         onClick={() => setShowBulkTools((v) => !v)}
-        aria-label="Show/hide bulk/merge tools"
+        aria-label="Show or hide advanced export tools"
+        aria-expanded={showBulkTools}
       >
-        <span style={{fontSize: 22, fontWeight: 700}}>≡</span>
+        <span className="toolsIcon" aria-hidden="true">{showBulkTools ? '×' : '≡'}</span>
       </button>
 
-      <section className="searchCard">
+      <section className="searchCard primarySearchCard">
+        <div className="sectionHeader">
+          <div>
+            <span className="sectionKicker">QUICK LOOKUP</span>
+            <h2>Student Search</h2>
+            <p>Retrieve a student profile using an SRN or a registered mobile number.</p>
+          </div>
+          <span className={"statusPill" + (isLoggedIn ? " success" : " warning")}>
+            {isLoggedIn ? 'Ready' : 'Login required'}
+          </span>
+        </div>
         <div className="modeRow" role="tablist" aria-label="Search mode">
           <button
             type="button"
@@ -753,16 +793,19 @@ function App() {
             spellCheck="false"
             autoCapitalize={searchMode === 'srn' ? 'characters' : 'off'}
             disabled={!isLoggedIn}
-            style={!isLoggedIn ? {background: '#f3f3f3', color: '#aaa'} : {}}
+            className={!isLoggedIn ? 'inputLocked' : ''}
           />
           <button type="submit" disabled={loading || !isLoggedIn}>
             {loading ? 'Searching...' : 'Search'}
           </button>
         </form>
-        {!isLoggedIn && <div className="metaLine" style={{color: '#b3261e'}}>Please login to search.</div>}
+        {!isLoggedIn && <div className="metaLine dangerText">Connect your ICAI session to begin searching.</div>}
 
-        <div className="metaLine">
-          {loading ? `Loading ${loadingProgress}% · ${(elapsedMs / 1000).toFixed(1)}s` : 'Ready'}
+        <div className="searchStatusRow">
+          <div className="metaLine">
+            {loading ? `Loading ${loadingProgress}% · ${(elapsedMs / 1000).toFixed(1)}s` : 'Search service ready'}
+          </div>
+          {sourceMeta && <div className="metaLine sourceMeta">{sourceMeta}</div>}
         </div>
 
         <div className="progressTrack" aria-hidden="true">
@@ -775,29 +818,35 @@ function App() {
 
       {/* ─── FIND LATEST REGISTRATION ─── */}
       {isLoggedIn && (
-        <section className="searchCard" style={{marginTop: 16}}>
-          <h3>Find Latest Registration</h3>
-          <div style={{fontSize: 13, color: '#666', marginBottom: 10}}>
-            Ek click mein latest SRN dhundho. Phir recent records extract karo CSV mein.
-            {Object.keys(latestCache).length > 0 && ' (Saved positions se fast search hoga)'}
+        <section className="searchCard featureCard latestCard">
+          <div className="sectionHeader compact">
+            <div>
+              <span className="sectionKicker">REGISTRATION DISCOVERY</span>
+              <h2>Find Latest Registration</h2>
+              <p>
+                Locate the newest SRN by region, then export the latest matching profiles.
+                {Object.keys(latestCache).length > 0 && ' Saved checkpoints make repeat scans faster.'}
+              </p>
+            </div>
+            <span className="statusPill info">{Object.keys(latestCache).length} cached</span>
           </div>
-          <div style={{display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center'}}>
+          <div className="regionGrid">
             {['WRO', 'CRO', 'ERO', 'SRO', 'NRO'].map(function(p) {
               var c = latestCache[p];
               return (
-                <div key={p} style={{display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2}}>
+                <div key={p} className="regionOption">
                   <button
                     type="button"
-                    className="modeBtn active"
+                    className={"regionButton" + (latestPrefix === p ? " selected" : "")}
                     disabled={latestLoading}
                     onClick={function() { onFindLatest(p); }}
-                    style={{minWidth: 100}}
                   >
-                    {latestLoading && latestPrefix === p ? 'Searching...' : p + ' Latest'}
+                    <span>{p}</span>
+                    <small>{latestLoading && latestPrefix === p ? 'Searching' : 'Find latest'}</small>
                   </button>
                   {c && (
-                    <span style={{fontSize: 10, color: '#888'}}>
-                      {c.srn} ({(c.foundAt || '').split('T')[0] || ''})
+                    <span className="cacheStamp">
+                      {c.srn} · {(c.foundAt || '').split('T')[0] || 'Saved'}
                     </span>
                   )}
                 </div>
@@ -805,56 +854,69 @@ function App() {
             })}
           </div>
 
-          {latestStatus && <div className="metaLine" style={{marginTop: 8}}>{latestStatus}</div>}
+          {latestStatus && <div className="noticeLine">{latestStatus}</div>}
 
           {latestResult && (
-            <div style={{marginTop: 12, padding: 12, background: '#f0f7ff', borderRadius: 8}}>
-              <div style={{fontWeight: 600, fontSize: 16, marginBottom: 4}}>
-                Latest: <span style={{color: '#1a73e8'}}>{latestResult.latestSrn}</span>
+            <div className="discoveryResult">
+              <div className="discoverySummary">
+                <div>
+                  <span className="resultLabel">LATEST VERIFIED SRN</span>
+                  <strong>{latestResult.latestSrn}</strong>
+                </div>
+                {latestResult.newRecordsSince > 0 && (
+                  <span className="statusPill success">
+                    +{latestResult.newRecordsSince} new
+                  </span>
+                )}
               </div>
               {latestResult.newRecordsSince > 0 && (
-                <div style={{fontSize: 13, color: '#0a8a3c', fontWeight: 600, marginBottom: 8}}>
-                  +{latestResult.newRecordsSince} new registrations since last check ({latestResult.cachedDate ? latestResult.cachedDate.split('T')[0] : ''})
+                <div className="inlineNotice successText">
+                  New registrations since {latestResult.cachedDate ? latestResult.cachedDate.split('T')[0] : 'the last check'}.
                 </div>
               )}
               {latestResult.cachedFrom && latestResult.newRecordsSince === 0 && (
-                <div style={{fontSize: 13, color: '#666', marginBottom: 8}}>
-                  No new registrations since last check ({latestResult.cachedDate ? latestResult.cachedDate.split('T')[0] : ''})
+                <div className="inlineNotice">
+                  No new registrations since {latestResult.cachedDate ? latestResult.cachedDate.split('T')[0] : 'the last check'}.
                 </div>
               )}
-              <div style={{display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap'}}>
-                <span style={{fontSize: 13}}>Recent kitne extract karne hain:</span>
+              <div className="actionRow">
+                <label htmlFor="recentCount">Recent records</label>
                 <input
+                  id="recentCount"
+                  className="compactInput"
                   value={recentCount}
                   onChange={function(e) { setRecentCount(e.target.value.replace(/\D/g, '').slice(0, 5)); }}
                   placeholder="100"
-                  style={{width: 70, padding: '4px 8px', borderRadius: 4, border: '1px solid #ccc'}}
                   inputMode="numeric"
                 />
                 <button
                   type="button"
-                  className="mergeBtn"
+                  className="primaryBtn"
                   disabled={recentLoading}
                   onClick={onExtractRecent}
-                  style={{background: '#1a73e8', color: '#fff'}}
                 >
-                  {recentLoading ? 'Extracting...' : 'Extract & Download CSV'}
+                  {recentLoading ? 'Preparing export...' : 'Extract & Download CSV'}
                 </button>
               </div>
-              {recentStatus && <div className="metaLine" style={{marginTop: 8}}>{recentStatus}</div>}
+              {recentStatus && <div className="noticeLine">{recentStatus}</div>}
               {recentRecords.length > 0 && (
-                <div style={{marginTop: 10, fontSize: 13, color: '#333'}}>
-                  <strong>Recent {recentRecords.length} records (newest first):</strong>
-                  <div style={{maxHeight: 200, overflow: 'auto', marginTop: 6}}>
+                <div className="recordsPreview">
+                  <div className="previewHeader">
+                    <strong>Recent registrations</strong>
+                    <span>{recentRecords.length} records</span>
+                  </div>
+                  <div className="recordList">
                     {recentRecords.slice(0, 20).map(function(r, i) {
                       return (
-                        <div key={i} style={{padding: '3px 0', borderBottom: '1px solid #eee'}}>
-                          <strong>{r.srn}</strong> — {r.name} | {r.mobile} | {r.email}
+                        <div key={i} className="recordRow">
+                          <strong>{r.srn}</strong>
+                          <span>{r.name}</span>
+                          <small>{r.mobile || r.email || 'No contact'}</small>
                         </div>
                       );
                     })}
                     {recentRecords.length > 20 && (
-                      <div style={{padding: '4px 0', color: '#888'}}>...aur {recentRecords.length - 20} records CSV mein</div>
+                      <div className="recordMore">{recentRecords.length - 20} additional records are included in the CSV.</div>
                     )}
                   </div>
                 </div>
@@ -866,58 +928,83 @@ function App() {
 
       {/* ─── DATE-WISE REGISTRATION DOWNLOAD ─── */}
       {isLoggedIn && (
-        <section className="searchCard" style={{marginTop: 16}}>
-          <h3>Date-wise Registration Download</h3>
-          <div style={{fontSize: 13, color: '#666', marginBottom: 10}}>
-            Date pick karo — sirf us din ki registrations ka CSV download hoga.
+        <section className="searchCard featureCard dateCard">
+          <div className="sectionHeader compact">
+            <div>
+              <span className="sectionKicker">DATE-SPECIFIC EXPORT</span>
+              <h2>Registration Timeline</h2>
+              <p>Select a region and date to export only registrations recorded on that day.</p>
+            </div>
+            <span className="statusPill info">CSV export</span>
           </div>
-          <form onSubmit={onExtractByDate} style={{display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center'}}>
-            <select
-              value={datePrefix}
-              onChange={function(e) { setDatePrefix(e.target.value); }}
-              style={{padding: '8px 12px', borderRadius: 6, border: '1px solid #ccc', fontWeight: 600}}
-            >
-              <option value="WRO">WRO</option>
-              <option value="CRO">CRO</option>
-              <option value="ERO">ERO</option>
-              <option value="SRO">SRO</option>
-              <option value="NRO">NRO</option>
-            </select>
-            <input
-              type="date"
-              value={targetDate}
-              onChange={function(e) { setTargetDate(e.target.value); }}
-              style={{padding: '8px 12px', borderRadius: 6, border: '1px solid #ccc'}}
-            />
+          <form onSubmit={onExtractByDate} className="dateFilterRow">
+            <label>
+              <span>Region</span>
+              <select
+                value={datePrefix}
+                onChange={function(e) { setDatePrefix(e.target.value); }}
+              >
+                <option value="WRO">WRO</option>
+                <option value="CRO">CRO</option>
+                <option value="ERO">ERO</option>
+                <option value="SRO">SRO</option>
+                <option value="NRO">NRO</option>
+              </select>
+            </label>
+            <label>
+              <span>Registration date</span>
+              <input
+                type="date"
+                value={targetDate}
+                onChange={function(e) { setTargetDate(e.target.value); }}
+              />
+            </label>
             <button
               type="submit"
-              className="mergeBtn"
+              className="primaryBtn"
               disabled={dateLoading}
-              style={{background: '#1a73e8', color: '#fff', fontWeight: 600}}
             >
-              {dateLoading ? 'Searching...' : 'Download Date CSV'}
+              {dateLoading ? 'Scanning registrations...' : 'Download Date CSV'}
             </button>
           </form>
-          {dateStatus && <div className="metaLine" style={{marginTop: 8}}>{dateStatus}</div>}
+          {dateStatus && <div className="noticeLine">{dateStatus}</div>}
           {dateRecords.length > 0 && (
-            <div style={{marginTop: 10, fontSize: 13, maxHeight: 200, overflow: 'auto'}}>
-              {dateRecords.slice(0, 15).map(function(r, i) {
-                return (
-                  <div key={i} style={{padding: '3px 0', borderBottom: '1px solid #eee'}}>
-                    <strong>{r.srn}</strong> — {r.name} | {r.mobile}
-                  </div>
-                );
-              })}
-              {dateRecords.length > 15 && (
-                <div style={{color: '#888', padding: '4px 0'}}>...aur {dateRecords.length - 15} records CSV mein</div>
-              )}
+            <div className="recordsPreview">
+              <div className="previewHeader">
+                <strong>Matching registrations</strong>
+                <span>{dateRecords.length} records</span>
+              </div>
+              <div className="recordList">
+                {dateRecords.slice(0, 15).map(function(r, i) {
+                  return (
+                    <div key={i} className="recordRow">
+                      <strong>{r.srn}</strong>
+                      <span>{r.name}</span>
+                      <small>{r.mobile || 'No mobile'}</small>
+                    </div>
+                  );
+                })}
+                {dateRecords.length > 15 && (
+                  <div className="recordMore">{dateRecords.length - 15} additional records are included in the CSV.</div>
+                )}
+              </div>
             </div>
           )}
         </section>
       )}
 
-      <div className={"bulkToolsPanel" + (showBulkTools ? " visible" : "")}
-        style={{display: showBulkTools ? undefined : 'none'}}>
+      <aside
+        className={"bulkToolsPanel" + (showBulkTools ? " visible" : "")}
+        aria-hidden={!showBulkTools}
+        aria-label="Advanced export tools"
+      >
+        <div className="drawerHeader">
+          <div>
+            <span className="sectionKicker">ADVANCED WORKSPACE</span>
+            <h2>Exports & Jobs</h2>
+          </div>
+          <button type="button" className="drawerClose" onClick={() => setShowBulkTools(false)} aria-label="Close advanced tools">×</button>
+        </div>
         <section className="searchCard bulkCard">
           <h3>Bulk CSV Download (Range)</h3>
           <form className="bulkRow" onSubmit={onBulkDownload}>
@@ -990,14 +1077,14 @@ function App() {
 
           {bulkStatus ? <div className="metaLine">{bulkStatus}</div> : null}
 
-          <div style={{marginTop: 12, borderTop: '1px solid #e0e0e0', paddingTop: 12}}>
+          <div className="backgroundAction">
             <button
               type="button"
-              className="mergeBtn"
-              style={{background: '#1a73e8', color: '#fff', fontWeight: 600}}
+              className="primaryBtn fullWidth"
               onClick={startBackgroundJob}
             >
-              🚀 Background Job Start (Tab band karo — chalti rahegi)
+              Start Background Job
+              <small>Continues after this tab is closed</small>
             </button>
           </div>
         </section>
@@ -1012,38 +1099,34 @@ function App() {
             {jobsList.map(function(job) {
               var pct = job.completed && job.count ? Math.round((job.completed / job.count) * 100) : 0;
               return (
-                <div key={job.id} className="bulkProgressBox" style={{marginBottom: 10, padding: 10, borderRadius: 8, background: '#f8f9fa'}}>
-                  <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6}}>
-                    <strong>{job.startSrn} + {job.count}</strong>
-                    <span style={{
-                      padding: '2px 8px',
-                      borderRadius: 4,
-                      fontSize: 12,
-                      fontWeight: 600,
-                      background: job.status === 'complete' ? '#d4edda' : job.status === 'running' ? '#fff3cd' : job.status === 'failed' ? '#f8d7da' : '#e2e3e5',
-                      color: job.status === 'complete' ? '#155724' : job.status === 'running' ? '#856404' : job.status === 'failed' ? '#721c24' : '#383d41'
-                    }}>
-                      {job.status === 'complete' ? '✅ Complete' : job.status === 'running' ? '⏳ Running' : job.status === 'failed' ? '❌ Failed' : job.status}
+                <div key={job.id} className="jobCard">
+                  <div className="jobHeader">
+                    <div>
+                      <span>SRN RANGE</span>
+                      <strong>{job.startSrn} + {job.count}</strong>
+                    </div>
+                    <span className={"jobStatus " + job.status}>
+                      {job.status === 'complete' ? 'Complete' : job.status === 'running' ? 'Running' : job.status === 'failed' ? 'Failed' : job.status}
                     </span>
                   </div>
-                  <div className="bulkProgressBar" style={{marginBottom: 6}}>
+                  <div className="bulkProgressBar compactBar">
                     <div className="bulkProgressFill" style={{ width: pct + '%' }} />
                   </div>
-                  <div style={{display: 'flex', gap: 12, fontSize: 13, color: '#555', flexWrap: 'wrap'}}>
-                    <span>{job.completed}/{job.count}</span>
-                    <span>✓ {job.ok}</span>
-                    <span>✗ {job.failed}</span>
-                    <span>{(job.elapsedMs / 1000).toFixed(0)}s</span>
+                  <div className="jobStats">
+                    <span><strong>{job.completed}</strong> / {job.count}</span>
+                    <span className="successText">{job.ok} successful</span>
+                    <span className="dangerText">{job.failed} failed</span>
+                    <span>{(job.elapsedMs / 1000).toFixed(0)}s elapsed</span>
                   </div>
-                  <div style={{marginTop: 8, display: 'flex', gap: 8}}>
+                  <div className="jobActions">
                     {job.status === 'complete' && (
-                      <button type="button" className="mergeBtn" style={{fontSize: 13}} onClick={function() { downloadJob(job.id); }}>
+                      <button type="button" className="primaryBtn compactBtn" onClick={function() { downloadJob(job.id); }}>
                         Download CSV
                       </button>
                     )}
                     {job.status === 'running' && (
-                      <button type="button" className="cancelBtn" style={{fontSize: 13}} onClick={function() { cancelJob(job.id); }}>
-                        Cancel
+                      <button type="button" className="cancelBtn compactBtn" onClick={function() { cancelJob(job.id); }}>
+                        Cancel Job
                       </button>
                     )}
                   </div>
@@ -1126,7 +1209,7 @@ function App() {
           </form>
           {mergeStatus ? <div className="metaLine">{mergeStatus}</div> : null}
         </section>
-      </div>
+      </aside>
 
       {result && (
         <section className="resultCard">
