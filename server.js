@@ -1254,7 +1254,7 @@ app.get('/api/find-latest', async (req, res) => {
     return res.status(400).json({ ok: false, error: 'Valid prefix chahiye (WRO/CRO/etc)' });
   }
 
-  const cached = getCachedLatest(prefix);
+  let cached = await getCachedLatest(prefix);
 
   // Known approximate ranges for ICAI prefixes
   const knownRanges = {
