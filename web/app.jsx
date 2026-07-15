@@ -136,6 +136,16 @@ function App() {
   const [jobPolling, setJobPolling] = useState(false);
   const jobPollRef = useRef(null);
 
+  // Find Latest state
+  const [latestPrefix, setLatestPrefix] = useState('WRO');
+  const [latestLoading, setLatestLoading] = useState(false);
+  const [latestResult, setLatestResult] = useState(null);
+  const [latestStatus, setLatestStatus] = useState('');
+  const [recentCount, setRecentCount] = useState('100');
+  const [recentLoading, setRecentLoading] = useState(false);
+  const [recentRecords, setRecentRecords] = useState([]);
+  const [recentStatus, setRecentStatus] = useState('');
+
   const cleanedSrn = useMemo(() => query.trim().toUpperCase(), [query]);
   const cleanedMobile = useMemo(() => query.replace(/\D/g, '').slice(-10), [query]);
   const courseRows = useMemo(() => {
@@ -247,6 +257,64 @@ function App() {
 
   function downloadJob(jobId) {
     window.open(`/api/jobs/download/${jobId}`, '_blank');
+  }
+
+  async function onFindLatest(prefix) {
+    setLatestPrefix(prefix);
+    setLatestLoading(true);
+    setLatestResult(null);
+    setLatestStatus(`${prefix} ka latest SRN search ho raha hai... (30-60 sec lagega)`);
+    setRecentRecords([]);
+    setRecentStatus('');
+
+    try {
+      const res = await fetch(`/api/find-latest?prefix=${prefix}`);
+      const json = await res.json();
+      if (!res.ok || !json.ok) throw new Error(json.error || 'Failed');
+      setLatestResult(json);
+      setLatestStatus(`Latest: ${json.latestSrn}`);
+    } catch (err) {
+      setLatestStatus(err.message || 'Failed to find latest');
+    } finally {
+      setLatestLoading(false);
+    }
+  }
+
+  async function onExtractRecent() {
+    if (!latestResult) return;
+    setRecentLoading(true);
+    setRecentStatus(`Extracting last ${recentCount} records from ${latestResult.latestSrn}...`);
+    setRecentRecords([]);
+
+    try {
+      const res = await fetch(`/api/extract-recent?prefix=${latestResult.prefix}&latest=${latestResult.latestNumber}&count=${recentCount}`);
+      const json = await res.json();
+      if (!res.ok || !json.ok) throw new Error(json.error || 'Failed');
+      setRecentRecords(json.records || []);
+      setRecentStatus(`Found ${json.totalFound} records (${json.latestSrn} se backward)`);
+
+      // Auto download CSV
+      if (json.csv) {
+        var csvBytes = atob(json.csv);
+        var uint8Array = new Uint8Array(csvBytes.length);
+        for (var i = 0; i < csvBytes.length; i++) {
+          uint8Array[i] = csvBytes.charCodeAt(i);
+        }
+        var blob = new Blob([uint8Array], { type: 'text/csv;charset=utf-8' });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = `latest_${latestResult.prefix}_${latestResult.latestNumber}_x${json.totalFound}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      }
+    } catch (err) {
+      setRecentStatus(err.message || 'Extraction failed');
+    } finally {
+      setRecentLoading(false);
+    }
   }
 
   async function onSearch(e) {
@@ -637,6 +705,110 @@ function App() {
         {error && <div className="errorBox">{error}</div>}
       </section>
 
+
+      {/* ─── FIND LATEST REGISTRATION ─── */}
+      {isLoggedIn && (
+        <section className="searchCard" style={{marginTop: 16}}>
+          <h3>Find Latest Registration</h3>
+          <div style={{fontSize: 13, color: '#666', marginBottom: 10}}>
+            Ek click mein latest SRN dhundho. Phir recent records extract karo CSV mein.
+          </div>
+          <div style={{display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center'}}>
+            <button
+              type="button"
+              className="modeBtn active"
+              disabled={latestLoading}
+              onClick={function() { onFindLatest('WRO'); }}
+              style={{minWidth: 100}}
+            >
+              {latestLoading && latestPrefix === 'WRO' ? 'Searching...' : 'WRO Latest'}
+            </button>
+            <button
+              type="button"
+              className="modeBtn active"
+              disabled={latestLoading}
+              onClick={function() { onFindLatest('CRO'); }}
+              style={{minWidth: 100}}
+            >
+              {latestLoading && latestPrefix === 'CRO' ? 'Searching...' : 'CRO Latest'}
+            </button>
+            <button
+              type="button"
+              className="modeBtn active"
+              disabled={latestLoading}
+              onClick={function() { onFindLatest('ERO'); }}
+              style={{minWidth: 100}}
+            >
+              {latestLoading && latestPrefix === 'ERO' ? 'Searching...' : 'ERO Latest'}
+            </button>
+            <button
+              type="button"
+              className="modeBtn active"
+              disabled={latestLoading}
+              onClick={function() { onFindLatest('SRO'); }}
+              style={{minWidth: 100}}
+            >
+              {latestLoading && latestPrefix === 'SRO' ? 'Searching...' : 'SRO Latest'}
+            </button>
+            <button
+              type="button"
+              className="modeBtn active"
+              disabled={latestLoading}
+              onClick={function() { onFindLatest('NRO'); }}
+              style={{minWidth: 100}}
+            >
+              {latestLoading && latestPrefix === 'NRO' ? 'Searching...' : 'NRO Latest'}
+            </button>
+          </div>
+
+          {latestStatus && <div className="metaLine" style={{marginTop: 8}}>{latestStatus}</div>}
+
+          {latestResult && (
+            <div style={{marginTop: 12, padding: 12, background: '#f0f7ff', borderRadius: 8}}>
+              <div style={{fontWeight: 600, fontSize: 16, marginBottom: 8}}>
+                Latest: <span style={{color: '#1a73e8'}}>{latestResult.latestSrn}</span>
+              </div>
+              <div style={{display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap'}}>
+                <span style={{fontSize: 13}}>Recent kitne extract karne hain:</span>
+                <input
+                  value={recentCount}
+                  onChange={function(e) { setRecentCount(e.target.value.replace(/\D/g, '').slice(0, 5)); }}
+                  placeholder="100"
+                  style={{width: 70, padding: '4px 8px', borderRadius: 4, border: '1px solid #ccc'}}
+                  inputMode="numeric"
+                />
+                <button
+                  type="button"
+                  className="mergeBtn"
+                  disabled={recentLoading}
+                  onClick={onExtractRecent}
+                  style={{background: '#1a73e8', color: '#fff'}}
+                >
+                  {recentLoading ? 'Extracting...' : 'Extract & Download CSV'}
+                </button>
+              </div>
+              {recentStatus && <div className="metaLine" style={{marginTop: 8}}>{recentStatus}</div>}
+              {recentRecords.length > 0 && (
+                <div style={{marginTop: 10, fontSize: 13, color: '#333'}}>
+                  <strong>Recent {recentRecords.length} records (newest first):</strong>
+                  <div style={{maxHeight: 200, overflow: 'auto', marginTop: 6}}>
+                    {recentRecords.slice(0, 20).map(function(r, i) {
+                      return (
+                        <div key={i} style={{padding: '3px 0', borderBottom: '1px solid #eee'}}>
+                          <strong>{r.srn}</strong> — {r.name} | {r.mobile} | {r.email}
+                        </div>
+                      );
+                    })}
+                    {recentRecords.length > 20 && (
+                      <div style={{padding: '4px 0', color: '#888'}}>...aur {recentRecords.length - 20} records CSV mein</div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </section>
+      )}
 
       <div className={"bulkToolsPanel" + (showBulkTools ? " visible" : "")}
         style={{display: showBulkTools ? undefined : 'none'}}>

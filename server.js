@@ -1126,6 +1126,204 @@ app.get('/api/health', (_req, res) => {
   res.json({ ok: true, uptime: process.uptime() });
 });
 
+// ─── FIND LATEST REGISTRATION ───────────────────────────────────────────────
+// Binary search to find the latest valid SRN for a prefix (WRO/CRO)
+// Then extract recent registrations backward from that point
+
+async function probesSrn(srn) {
+  // Returns true if SRN exists, false if not
+  try {
+    await fetchStudentCardData(srn);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+async function binarySearchLatestSrn(prefix, low, high) {
+  // Find the highest SRN number that exists
+  let lastFound = low;
+  
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    const srn = `${prefix}${String(mid).padStart(7, '0')}`;
+    
+    console.log(`[FIND-LATEST] Binary search: testing ${srn} (low=${low}, high=${high})`);
+    const exists = await probesSrn(srn);
+    
+    if (exists) {
+      lastFound = mid;
+      low = mid + 1; // Search higher
+    } else {
+      high = mid - 1; // Search lower
+    }
+  }
+  
+  return lastFound;
+}
+
+async function linearScanLatest(prefix, startFrom, maxProbes) {
+  // From a known good SRN, scan forward to find the exact latest
+  let latest = startFrom;
+  let consecutive_misses = 0;
+  const MAX_MISSES = 20; // Stop after 20 consecutive misses
+  
+  for (let i = startFrom + 1; i <= startFrom + maxProbes && consecutive_misses < MAX_MISSES; i++) {
+    const srn = `${prefix}${String(i).padStart(7, '0')}`;
+    const exists = await probesSrn(srn);
+    
+    if (exists) {
+      latest = i;
+      consecutive_misses = 0;
+    } else {
+      consecutive_misses += 1;
+    }
+  }
+  
+  return latest;
+}
+
+app.get('/api/find-latest', async (req, res) => {
+  const prefix = normalizeStudentPrefix(req.query.prefix);
+  if (!prefix) {
+    return res.status(400).json({ ok: false, error: 'Valid prefix chahiye (WRO/CRO/etc)' });
+  }
+
+  // Known approximate ranges for ICAI prefixes
+  const knownRanges = {
+    'WRO': { low: 800000, high: 1200000 },
+    'CRO': { low: 800000, high: 1200000 },
+    'ERO': { low: 800000, high: 1200000 },
+    'SRO': { low: 800000, high: 1200000 },
+    'NRO': { low: 800000, high: 1200000 },
+  };
+
+  const range = knownRanges[prefix] || { low: 500000, high: 1500000 };
+  
+  try {
+    console.log(`[FIND-LATEST] Starting binary search for ${prefix} (range: ${range.low}-${range.high})`);
+    
+    // Step 1: Binary search to get approximate latest
+    const approx = await binarySearchLatestSrn(prefix, range.low, range.high);
+    console.log(`[FIND-LATEST] Binary search found approx: ${prefix}${String(approx).padStart(7, '0')}`);
+    
+    // Step 2: Linear scan from approx to find exact latest (gaps possible)
+    const exact = await linearScanLatest(prefix, approx, 200);
+    const latestSrn = `${prefix}${String(exact).padStart(7, '0')}`;
+    
+    console.log(`[FIND-LATEST] Exact latest: ${latestSrn}`);
+    
+    return res.json({
+      ok: true,
+      prefix,
+      latestNumber: exact,
+      latestSrn,
+      message: `Latest registration found: ${latestSrn}`
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: error && error.message ? error.message : 'Search failed'
+    });
+  }
+});
+
+// Extract recent registrations (latest N records, skipping gaps)
+app.get('/api/extract-recent', async (req, res) => {
+  const prefix = normalizeStudentPrefix(req.query.prefix);
+  const count = Math.min(Number(req.query.count) || 100, 5000);
+  const latestNo = Number(req.query.latest) || 0;
+
+  if (!prefix) {
+    return res.status(400).json({ ok: false, error: 'Valid prefix chahiye (WRO/CRO/etc)' });
+  }
+
+  if (!latestNo) {
+    return res.status(400).json({ ok: false, error: 'Latest number chahiye. Pehle Find Latest use karo.' });
+  }
+
+  // Go backward from latest, extract 'count' valid records
+  const startFrom = latestNo;
+  const results = [];
+  let cursor = startFrom;
+  let attempts = 0;
+  const maxAttempts = count * 3; // Allow for gaps
+
+  console.log(`[EXTRACT-RECENT] Starting from ${prefix}${String(startFrom).padStart(7, '0')}, need ${count} records`);
+
+  const concurrency = Math.min(Number(req.query.concurrency) || 30, 100);
+  
+  // Batch fetch going backward
+  while (results.length < count && attempts < maxAttempts && cursor > 0) {
+    const batchSize = Math.min(concurrency, count - results.length + 10);
+    const batch = [];
+    
+    for (let i = 0; i < batchSize && cursor > 0; i++) {
+      batch.push({ no: cursor, srn: `${prefix}${String(cursor).padStart(7, '0')}` });
+      cursor -= 1;
+      attempts += 1;
+    }
+
+    const batchResults = await Promise.all(
+      batch.map(async (item) => {
+        try {
+          const data = await fetchStudentCardData(item.srn);
+          return { status: 'ok', srn: item.srn, no: item.no, data };
+        } catch (e) {
+          return { status: 'error', srn: item.srn, no: item.no, data: null };
+        }
+      })
+    );
+
+    for (const r of batchResults) {
+      if (r.status === 'ok' && results.length < count) {
+        results.push(r);
+      }
+    }
+  }
+
+  // Sort results by SRN number descending (newest first)
+  results.sort((a, b) => b.no - a.no);
+
+  // Filter only records with recent registration dates (today's date check)
+  // Build CSV
+  const headers = [
+    'SRN', 'Name', 'Sex', 'Date of Birth', 'Father', 'Mother',
+    'Email', 'Mobile', 'Aadhar Category', 'Correspondence Address', 'Permanent Address', 'Pin',
+    'CA Foundation', 'CA Foundation Reg Date', 'CA Inter', 'CA Inter Reg Date',
+    'CA Final', 'CA Final Reg Date', 'Course & Exam Details'
+  ];
+
+  const csvLines = [buildCsvLine(headers)];
+  for (const r of results) {
+    const data = r.data || {};
+    const foundationRow = getCourseRowByLevel(data.courseRows, 'FOUNDATION');
+    const interRow = getCourseRowByLevel(data.courseRows, 'INTERMEDIATE');
+    const finalRow = getCourseRowByLevel(data.courseRows, 'FINAL');
+    csvLines.push(buildCsvLine([
+      data.srn || r.srn,
+      data.name || '', data.sex || '', data.dob || '',
+      data.father || '', data.mother || '', data.email || '', data.mobile || '',
+      data.aadharCategory || '', data.correspondenceAddress || '', data.permanentAddress || '', data.pin || '',
+      formatCourseAvailability(foundationRow), (foundationRow && foundationRow.registrationDate) || '',
+      formatCourseAvailability(interRow), (interRow && interRow.registrationDate) || '',
+      formatCourseAvailability(finalRow), (finalRow && finalRow.registrationDate) || '',
+      normalizeCourseDetails(data.courseRows || [])
+    ]));
+  }
+
+  const csvContent = csvLines.join('\n') + '\n';
+
+  return res.json({
+    ok: true,
+    prefix,
+    latestSrn: `${prefix}${String(startFrom).padStart(7, '0')}`,
+    totalFound: results.length,
+    records: results.map(r => r.data),
+    csv: Buffer.from(csvContent, 'utf-8').toString('base64')
+  });
+});
+
 app.post('/api/login', async (_req, res) => {
   try {
     console.log('[LOGIN] Endpoint called');
