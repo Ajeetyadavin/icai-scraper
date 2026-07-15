@@ -141,6 +141,7 @@ function App() {
   const [latestLoading, setLatestLoading] = useState(false);
   const [latestResult, setLatestResult] = useState(null);
   const [latestStatus, setLatestStatus] = useState('');
+  const [latestCache, setLatestCache] = useState({});
   const [recentCount, setRecentCount] = useState('100');
   const [recentLoading, setRecentLoading] = useState(false);
   const [recentRecords, setRecentRecords] = useState([]);
@@ -223,6 +224,18 @@ function App() {
     return () => { if (jobPollRef.current) clearInterval(jobPollRef.current); };
   }, []);
 
+  // Load latest cache
+  useEffect(() => {
+    async function loadCache() {
+      try {
+        var res = await fetch('/api/latest-cache');
+        var json = await res.json();
+        if (json.ok) setLatestCache(json.cache || {});
+      } catch (_e) {}
+    }
+    loadCache();
+  }, []);
+
   async function startBackgroundJob(e) {
     e.preventDefault();
     const prefix = bulkPrefix.trim().toUpperCase();
@@ -263,16 +276,26 @@ function App() {
     setLatestPrefix(prefix);
     setLatestLoading(true);
     setLatestResult(null);
-    setLatestStatus(`${prefix} ka latest SRN search ho raha hai... (30-60 sec lagega)`);
     setRecentRecords([]);
     setRecentStatus('');
 
+    var cached = latestCache[prefix];
+    if (cached) {
+      setLatestStatus(`${prefix}: Last known ${cached.srn} (${cached.foundAt.split('T')[0]}). Checking for new...`);
+    } else {
+      setLatestStatus(`${prefix} ka latest SRN search ho raha hai... (pehli baar — 30-60 sec lagega)`);
+    }
+
     try {
-      const res = await fetch(`/api/find-latest?prefix=${prefix}`);
-      const json = await res.json();
+      var res = await fetch('/api/find-latest?prefix=' + prefix);
+      var json = await res.json();
       if (!res.ok || !json.ok) throw new Error(json.error || 'Failed');
       setLatestResult(json);
-      setLatestStatus(`Latest: ${json.latestSrn}`);
+      setLatestStatus(json.message);
+      // Refresh cache
+      var cacheRes = await fetch('/api/latest-cache');
+      var cacheJson = await cacheRes.json();
+      if (cacheJson.ok) setLatestCache(cacheJson.cache || {});
     } catch (err) {
       setLatestStatus(err.message || 'Failed to find latest');
     } finally {
@@ -712,62 +735,49 @@ function App() {
           <h3>Find Latest Registration</h3>
           <div style={{fontSize: 13, color: '#666', marginBottom: 10}}>
             Ek click mein latest SRN dhundho. Phir recent records extract karo CSV mein.
+            {Object.keys(latestCache).length > 0 && ' (Saved positions se fast search hoga)'}
           </div>
           <div style={{display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center'}}>
-            <button
-              type="button"
-              className="modeBtn active"
-              disabled={latestLoading}
-              onClick={function() { onFindLatest('WRO'); }}
-              style={{minWidth: 100}}
-            >
-              {latestLoading && latestPrefix === 'WRO' ? 'Searching...' : 'WRO Latest'}
-            </button>
-            <button
-              type="button"
-              className="modeBtn active"
-              disabled={latestLoading}
-              onClick={function() { onFindLatest('CRO'); }}
-              style={{minWidth: 100}}
-            >
-              {latestLoading && latestPrefix === 'CRO' ? 'Searching...' : 'CRO Latest'}
-            </button>
-            <button
-              type="button"
-              className="modeBtn active"
-              disabled={latestLoading}
-              onClick={function() { onFindLatest('ERO'); }}
-              style={{minWidth: 100}}
-            >
-              {latestLoading && latestPrefix === 'ERO' ? 'Searching...' : 'ERO Latest'}
-            </button>
-            <button
-              type="button"
-              className="modeBtn active"
-              disabled={latestLoading}
-              onClick={function() { onFindLatest('SRO'); }}
-              style={{minWidth: 100}}
-            >
-              {latestLoading && latestPrefix === 'SRO' ? 'Searching...' : 'SRO Latest'}
-            </button>
-            <button
-              type="button"
-              className="modeBtn active"
-              disabled={latestLoading}
-              onClick={function() { onFindLatest('NRO'); }}
-              style={{minWidth: 100}}
-            >
-              {latestLoading && latestPrefix === 'NRO' ? 'Searching...' : 'NRO Latest'}
-            </button>
+            {['WRO', 'CRO', 'ERO', 'SRO', 'NRO'].map(function(p) {
+              var c = latestCache[p];
+              return (
+                <div key={p} style={{display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2}}>
+                  <button
+                    type="button"
+                    className="modeBtn active"
+                    disabled={latestLoading}
+                    onClick={function() { onFindLatest(p); }}
+                    style={{minWidth: 100}}
+                  >
+                    {latestLoading && latestPrefix === p ? 'Searching...' : p + ' Latest'}
+                  </button>
+                  {c && (
+                    <span style={{fontSize: 10, color: '#888'}}>
+                      {c.srn} ({c.foundAt.split('T')[0]})
+                    </span>
+                  )}
+                </div>
+              );
+            })}
           </div>
 
           {latestStatus && <div className="metaLine" style={{marginTop: 8}}>{latestStatus}</div>}
 
           {latestResult && (
             <div style={{marginTop: 12, padding: 12, background: '#f0f7ff', borderRadius: 8}}>
-              <div style={{fontWeight: 600, fontSize: 16, marginBottom: 8}}>
+              <div style={{fontWeight: 600, fontSize: 16, marginBottom: 4}}>
                 Latest: <span style={{color: '#1a73e8'}}>{latestResult.latestSrn}</span>
               </div>
+              {latestResult.newRecordsSince > 0 && (
+                <div style={{fontSize: 13, color: '#0a8a3c', fontWeight: 600, marginBottom: 8}}>
+                  +{latestResult.newRecordsSince} new registrations since last check ({latestResult.cachedDate ? latestResult.cachedDate.split('T')[0] : ''})
+                </div>
+              )}
+              {latestResult.cachedFrom && latestResult.newRecordsSince === 0 && (
+                <div style={{fontSize: 13, color: '#666', marginBottom: 8}}>
+                  No new registrations since last check ({latestResult.cachedDate ? latestResult.cachedDate.split('T')[0] : ''})
+                </div>
+              )}
               <div style={{display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap'}}>
                 <span style={{fontSize: 13}}>Recent kitne extract karne hain:</span>
                 <input

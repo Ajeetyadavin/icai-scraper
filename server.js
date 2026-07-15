@@ -1126,12 +1126,44 @@ app.get('/api/health', (_req, res) => {
   res.json({ ok: true, uptime: process.uptime() });
 });
 
-// ─── FIND LATEST REGISTRATION ───────────────────────────────────────────────
+// ─── FIND LATEST REGISTRATION (with cache) ──────────────────────────────────
 // Binary search to find the latest valid SRN for a prefix (WRO/CRO)
-// Then extract recent registrations backward from that point
+// Saves result to disk so next time it starts from saved point, not from scratch.
+
+const LATEST_CACHE_FILE = path.join(__dirname, 'output', 'latest-cache.json');
+
+function loadLatestCache() {
+  try {
+    if (fs.existsSync(LATEST_CACHE_FILE)) {
+      return JSON.parse(fs.readFileSync(LATEST_CACHE_FILE, 'utf-8'));
+    }
+  } catch (e) {}
+  return {};
+}
+
+function saveLatestCache(cache) {
+  const dir = path.dirname(LATEST_CACHE_FILE);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(LATEST_CACHE_FILE, JSON.stringify(cache, null, 2), 'utf-8');
+}
+
+function getCachedLatest(prefix) {
+  const cache = loadLatestCache();
+  return cache[prefix] || null; // { number, srn, foundAt (ISO date) }
+}
+
+function setCachedLatest(prefix, number) {
+  const cache = loadLatestCache();
+  cache[prefix] = {
+    number,
+    srn: `${prefix}${String(number).padStart(7, '0')}`,
+    foundAt: new Date().toISOString()
+  };
+  saveLatestCache(cache);
+  return cache[prefix];
+}
 
 async function probesSrn(srn) {
-  // Returns true if SRN exists, false if not
   try {
     await fetchStudentCardData(srn);
     return true;
@@ -1141,7 +1173,6 @@ async function probesSrn(srn) {
 }
 
 async function binarySearchLatestSrn(prefix, low, high) {
-  // Find the highest SRN number that exists
   let lastFound = low;
   
   while (low <= high) {
@@ -1153,9 +1184,9 @@ async function binarySearchLatestSrn(prefix, low, high) {
     
     if (exists) {
       lastFound = mid;
-      low = mid + 1; // Search higher
+      low = mid + 1;
     } else {
-      high = mid - 1; // Search lower
+      high = mid - 1;
     }
   }
   
@@ -1163,10 +1194,9 @@ async function binarySearchLatestSrn(prefix, low, high) {
 }
 
 async function linearScanLatest(prefix, startFrom, maxProbes) {
-  // From a known good SRN, scan forward to find the exact latest
   let latest = startFrom;
   let consecutive_misses = 0;
-  const MAX_MISSES = 20; // Stop after 20 consecutive misses
+  const MAX_MISSES = 20;
   
   for (let i = startFrom + 1; i <= startFrom + maxProbes && consecutive_misses < MAX_MISSES; i++) {
     const srn = `${prefix}${String(i).padStart(7, '0')}`;
@@ -1183,11 +1213,19 @@ async function linearScanLatest(prefix, startFrom, maxProbes) {
   return latest;
 }
 
+// Get cached latest info
+app.get('/api/latest-cache', (_req, res) => {
+  const cache = loadLatestCache();
+  return res.json({ ok: true, cache });
+});
+
 app.get('/api/find-latest', async (req, res) => {
   const prefix = normalizeStudentPrefix(req.query.prefix);
   if (!prefix) {
     return res.status(400).json({ ok: false, error: 'Valid prefix chahiye (WRO/CRO/etc)' });
   }
+
+  const cached = getCachedLatest(prefix);
 
   // Known approximate ranges for ICAI prefixes
   const knownRanges = {
@@ -1201,24 +1239,39 @@ app.get('/api/find-latest', async (req, res) => {
   const range = knownRanges[prefix] || { low: 500000, high: 1500000 };
   
   try {
-    console.log(`[FIND-LATEST] Starting binary search for ${prefix} (range: ${range.low}-${range.high})`);
+    let searchLow;
     
-    // Step 1: Binary search to get approximate latest
-    const approx = await binarySearchLatestSrn(prefix, range.low, range.high);
-    console.log(`[FIND-LATEST] Binary search found approx: ${prefix}${String(approx).padStart(7, '0')}`);
-    
-    // Step 2: Linear scan from approx to find exact latest (gaps possible)
-    const exact = await linearScanLatest(prefix, approx, 200);
+    if (cached) {
+      // Start from saved point — just scan forward from last known
+      searchLow = cached.number;
+      console.log(`[FIND-LATEST] Cache hit for ${prefix}: ${cached.srn} (found on ${cached.foundAt}). Scanning forward...`);
+    } else {
+      // No cache — full binary search
+      console.log(`[FIND-LATEST] No cache for ${prefix}. Full binary search (${range.low}-${range.high})`);
+      searchLow = await binarySearchLatestSrn(prefix, range.low, range.high);
+      console.log(`[FIND-LATEST] Binary search found: ${prefix}${String(searchLow).padStart(7, '0')}`);
+    }
+
+    // Linear scan forward from known/approx point to find exact latest
+    const exact = await linearScanLatest(prefix, searchLow, 500);
     const latestSrn = `${prefix}${String(exact).padStart(7, '0')}`;
     
-    console.log(`[FIND-LATEST] Exact latest: ${latestSrn}`);
+    // Save to cache
+    const savedEntry = setCachedLatest(prefix, exact);
+    
+    console.log(`[FIND-LATEST] Latest: ${latestSrn} (saved to cache)`);
     
     return res.json({
       ok: true,
       prefix,
       latestNumber: exact,
       latestSrn,
-      message: `Latest registration found: ${latestSrn}`
+      cachedFrom: cached ? cached.srn : null,
+      cachedDate: cached ? cached.foundAt : null,
+      newRecordsSince: cached ? exact - cached.number : 0,
+      message: cached 
+        ? `Latest: ${latestSrn} (${exact - cached.number} new since ${cached.foundAt.split('T')[0]})`
+        : `Latest: ${latestSrn} (first time — saved for next time)`
     });
   } catch (error) {
     return res.status(500).json({
