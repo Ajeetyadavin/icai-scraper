@@ -694,7 +694,6 @@ function App() {
           <div>
             <div className="eyebrow">ICAI DATA WORKSPACE</div>
             <h1>Student Intelligence Console</h1>
-            <p>Search profiles, locate recent registrations, and manage exports from one secure workspace.</p>
           </div>
         </div>
 
@@ -756,7 +755,6 @@ function App() {
           <div>
             <span className="sectionKicker">QUICK LOOKUP</span>
             <h2>Student Search</h2>
-            <p>Retrieve a student profile using an SRN or a registered mobile number.</p>
           </div>
           <span className={"statusPill" + (isLoggedIn ? " success" : " warning")}>
             {isLoggedIn ? 'Ready' : 'Login required'}
@@ -799,7 +797,7 @@ function App() {
             {loading ? 'Searching...' : 'Search'}
           </button>
         </form>
-        {!isLoggedIn && <div className="metaLine dangerText">Connect your ICAI session to begin searching.</div>}
+        {!isLoggedIn && <div className="metaLine dangerText">Connect session to search.</div>}
 
         <div className="searchStatusRow">
           <div className="metaLine">
@@ -822,11 +820,7 @@ function App() {
           <div className="sectionHeader compact">
             <div>
               <span className="sectionKicker">REGISTRATION DISCOVERY</span>
-              <h2>Find Latest Registration</h2>
-              <p>
-                Locate the newest SRN by region, then export the latest matching profiles.
-                {Object.keys(latestCache).length > 0 && ' Saved checkpoints make repeat scans faster.'}
-              </p>
+              <h2>Find Latest</h2>
             </div>
             <span className="statusPill info">{Object.keys(latestCache).length} cached</span>
           </div>
@@ -871,16 +865,15 @@ function App() {
               </div>
               {latestResult.newRecordsSince > 0 && (
                 <div className="inlineNotice successText">
-                  New registrations since {latestResult.cachedDate ? latestResult.cachedDate.split('T')[0] : 'the last check'}.
+                  +{latestResult.newRecordsSince} new since {latestResult.cachedDate ? latestResult.cachedDate.split('T')[0] : 'last check'}
                 </div>
               )}
               {latestResult.cachedFrom && latestResult.newRecordsSince === 0 && (
                 <div className="inlineNotice">
-                  No new registrations since {latestResult.cachedDate ? latestResult.cachedDate.split('T')[0] : 'the last check'}.
+                  No new since {latestResult.cachedDate ? latestResult.cachedDate.split('T')[0] : 'last check'}
                 </div>
               )}
               <div className="actionRow">
-                <label htmlFor="recentCount">Recent records</label>
                 <input
                   id="recentCount"
                   className="compactInput"
@@ -895,15 +888,14 @@ function App() {
                   disabled={recentLoading}
                   onClick={onExtractRecent}
                 >
-                  {recentLoading ? 'Preparing export...' : 'Extract & Download CSV'}
+                  {recentLoading ? 'Exporting...' : 'Extract CSV'}
                 </button>
               </div>
               {recentStatus && <div className="noticeLine">{recentStatus}</div>}
               {recentRecords.length > 0 && (
                 <div className="recordsPreview">
                   <div className="previewHeader">
-                    <strong>Recent registrations</strong>
-                    <span>{recentRecords.length} records</span>
+                    <strong>{recentRecords.length} records</strong>
                   </div>
                   <div className="recordList">
                     {recentRecords.slice(0, 20).map(function(r, i) {
@@ -916,7 +908,7 @@ function App() {
                       );
                     })}
                     {recentRecords.length > 20 && (
-                      <div className="recordMore">{recentRecords.length - 20} additional records are included in the CSV.</div>
+                      <div className="recordMore">+{recentRecords.length - 20} more in CSV</div>
                     )}
                   </div>
                 </div>
@@ -932,10 +924,9 @@ function App() {
           <div className="sectionHeader compact">
             <div>
               <span className="sectionKicker">DATE-SPECIFIC EXPORT</span>
-              <h2>Registration Timeline</h2>
-              <p>Select a region and date to export only registrations recorded on that day.</p>
+              <h2>By Date</h2>
             </div>
-            <span className="statusPill info">CSV export</span>
+            <span className="statusPill info">CSV</span>
           </div>
           <form onSubmit={onExtractByDate} className="dateFilterRow">
             <label>
@@ -971,8 +962,7 @@ function App() {
           {dateRecords.length > 0 && (
             <div className="recordsPreview">
               <div className="previewHeader">
-                <strong>Matching registrations</strong>
-                <span>{dateRecords.length} records</span>
+                <strong>{dateRecords.length} matches</strong>
               </div>
               <div className="recordList">
                 {dateRecords.slice(0, 15).map(function(r, i) {
@@ -985,7 +975,7 @@ function App() {
                   );
                 })}
                 {dateRecords.length > 15 && (
-                  <div className="recordMore">{dateRecords.length - 15} additional records are included in the CSV.</div>
+                  <div className="recordMore">+{dateRecords.length - 15} more in CSV</div>
                 )}
               </div>
             </div>
@@ -1000,10 +990,10 @@ function App() {
       >
         <div className="drawerHeader">
           <div>
-            <span className="sectionKicker">ADVANCED WORKSPACE</span>
+            <span className="sectionKicker">TOOLS</span>
             <h2>Exports & Jobs</h2>
           </div>
-          <button type="button" className="drawerClose" onClick={() => setShowBulkTools(false)} aria-label="Close advanced tools">×</button>
+          <button type="button" className="drawerClose" onClick={() => setShowBulkTools(false)} aria-label="Close">×</button>
         </div>
         <section className="searchCard bulkCard">
           <h3>Bulk CSV Download (Range)</h3>
@@ -1083,8 +1073,8 @@ function App() {
               className="primaryBtn fullWidth"
               onClick={startBackgroundJob}
             >
-              Start Background Job
-              <small>Continues after this tab is closed</small>
+              Background Job
+              <small>Runs after tab is closed</small>
             </button>
           </div>
         </section>
@@ -1093,9 +1083,6 @@ function App() {
         {jobsList.length > 0 && (
           <section className="searchCard bulkCard">
             <h3>Background Jobs</h3>
-            <div style={{fontSize: 13, color: '#666', marginBottom: 8}}>
-              Tab band karo, net band karo — server pe chalti rahegi. Wapas aake download karo.
-            </div>
             {jobsList.map(function(job) {
               var pct = job.completed && job.count ? Math.round((job.completed / job.count) * 100) : 0;
               return (
